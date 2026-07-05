@@ -1,0 +1,8 @@
+#!/bin/sh
+# Rerun when any managed desktop entry changes:
+{{ range glob (joinPath .chezmoi.sourceDir "dot_local/share/applications/*") -}}
+# {{ base . }} hash: {{ include . | sha256sum }}
+{{ end -}}
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$HOME/.local/share/applications"
+fi

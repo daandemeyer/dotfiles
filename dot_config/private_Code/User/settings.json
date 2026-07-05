@@ -1,0 +1,92 @@
+{
+    "window.title": "${dirty}${activeEditorLong}${separator}${rootName}${separator}${profileName}${separator}${appName}",
+    "window.titleBarStyle": "custom",
+    "window.menuBarVisibility": "hidden",
+
+    "files.autoSave": "onFocusChange",
+    "files.simpleDialog.enable": true,
+
+    "comments.openView": "never",
+
+    "workbench.editor.showTabs": "none",
+    "workbench.activityBar.location": "hidden",
+    "workbench.editor.enablePreview": false,
+    "workbench.editor.limit.enabled": true,
+    "workbench.editor.limit.value": 2,
+    "workbench.editor.centeredLayoutFixedWidth": true,
+
+    "terminal.integrated.commandsToSkipShell": [
+        "workbench.panel.chat",
+        "workbench.action.toggleSidebarVisibility",
+        "workbench.action.quickOpenTerm",
+        "workbench.action.toggleAuxiliaryBar",
+        "workbench.view.extension.claude-sidebar-secondary",
+        "pr:github.focus",
+        "github:activePullRequest.focus"
+    ],
+    "terminal.integrated.tabs.title": "${workspaceFolderName}",
+    "terminal.integrated.tabs.description": "${task}${separator}${local}${separator}${cwdFolder}",
+    "terminal.integrated.stickyScroll.enabled": false,
+    "terminal.integrated.shellIntegration.enabled": false,
+    "terminal.integrated.gpuAcceleration": "on",
+    "terminal.integrated.fontLigatures.enabled": false,
+    "terminal.integrated.customGlyphs": false,
+    "terminal.integrated.smoothScrolling": false,
+
+    "explorer.confirmDelete": false,
+    "explorer.confirmDragAndDrop": false,
+    "explorer.sortOrder": "mixed",
+
+    "editor.wordBasedSuggestions": "off",
+    "editor.folding": false,
+    "editor.guides.indentation": false,
+    "editor.inlayHints.enabled": "off",
+    "editor.minimap.enabled": false,
+    "editor.stickyScroll.enabled": false,
+    "editor.inlineSuggest.enabled": false,
+
+    "search.followSymlinks": false,
+
+    "git.allowForcePush": true,
+    "git.useForcePushWithLease": true,
+    "git.useIntegratedAskPass": false,
+
+    "clangd.arguments": ["--header-insertion=never"],
+
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/bower_components": true,
+        "**/*.code-search": true,
+        "build": true,
+        "mkosi.tools": true
+    },
+
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true
+    },
+
+    "files.watcherExclude": {
+        ".git": true,
+        "mkosi.tools": true,
+        "build": true,
+    },
+
+    "extensions.ignoreRecommendations": true,
+
+    "extensions.experimental.deferredStartupFinishedActivation": true,
+    "git.confirmForcePush": false,
+    "git.blame.editorDecoration.enabled": true,
+    "git.autofetch": false,
+    
+    "chat.viewSessions.orientation": "stacked",
+    
+    "claudeCode.preferredLocation": "sidebar",
+    "claudeCode.enableNewConversationShortcut": true,
+
+    "starlark.lspPath": "buck2",
+    "starlark.lspArguments": ["lsp"],
+}

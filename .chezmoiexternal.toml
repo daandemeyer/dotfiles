@@ -1,0 +1,12 @@
+{{ $miseVersion := "v2026.7.0" -}}
+{{ $miseArch := .chezmoi.arch | replace "amd64" "x64" -}}
+{{ $miseChecksums := dict
+     "x64"   "a3ff8f55b61504e7d7556d7b0cac4413e0c85ef7279545d2c2c3f49bd2cf8472"
+     "arm64" "fcbba22dfd6bfaf94912fdba3e1f034c89841cda7a895fd2b7402cef3d7ae214" -}}
+
+[".local/bin/mise"]
+    type = "archive-file"
+    url = "https://github.com/jdx/mise/releases/download/{{ $miseVersion }}/mise-{{ $miseVersion }}-linux-{{ $miseArch }}.tar.gz"
+    path = "mise/bin/mise"
+    executable = true
+    checksum.sha256 = "{{ index $miseChecksums $miseArch }}"

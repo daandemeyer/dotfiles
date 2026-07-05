@@ -1,0 +1,15 @@
+#!/bin/sh
+# zig uses arch-os-abi triples without the vendor part, so translate GNU-style
+# triples (x86_64-unknown-linux-gnu) that cc-rs and friends pass via --target.
+n=$#
+i=0
+while [ "$i" -lt "$n" ]; do
+    a=$1
+    shift
+    case "$a" in
+    --target=*) a="--target=$(printf '%s' "${a#--target=}" | sed 's/-unknown-/-/')" ;;
+    esac
+    set -- "$@" "$a"
+    i=$((i + 1))
+done
+exec zig c++ "$@"

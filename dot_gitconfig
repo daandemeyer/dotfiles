@@ -1,0 +1,10 @@
+[user]
+	email = daan@amutable.com
+	name = Daan De Meyer
+[sendemail]
+	smtpencryption = tls
+	smtpserver = smtp.gmail.com
+	smtpuser = daan@amutable.com
+	smtpserverport = 587
+[init]
+	defaultbranch = main
