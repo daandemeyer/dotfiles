@@ -1,0 +1,2 @@
+[env_var.TINE_BOX]
+format = '[\($env_value\)](bold cyan) '

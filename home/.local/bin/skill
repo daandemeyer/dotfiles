@@ -1,0 +1,189 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["rich"]
+# ///
+# Versions are pinned by the sibling skill.lock. Editing the dependencies above
+# makes the next run silently re-resolve and rewrite it, so relock deliberately
+# with `uv lock --script`.
+"""Manage skills shared between Claude Code and Codex."""
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import rich.box
+import rich.console
+import rich.table
+
+AGENTS = ("claude", "codex")
+SHARED = ".local/share/agent-skills"
+PLACEHOLDER = "TODO: describe when this skill should be used."
+
+
+def source_dir() -> Path:
+    root = subprocess.run(
+        ["mise", "settings", "get", "dotfiles.root"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return Path(root).expanduser()
+
+
+def source_skill(source: Path, name: str) -> Path:
+    return source / SHARED / name
+
+
+def source_stubs(source: Path, name: str) -> list[Path]:
+    return [source / f".{agent}/skills/{name}" for agent in AGENTS]
+
+
+def targets(name: str) -> list[Path]:
+    return [Path.home() / SHARED / name] + [
+        Path.home() / f".{agent}/skills/{name}" for agent in AGENTS
+    ]
+
+
+def apply() -> None:
+    subprocess.run(["mise", "dotfiles", "apply", "--yes"], check=True)
+
+
+def render_skill(name: str, description: str) -> str:
+    # A description may contain ": ", which is not a valid unquoted YAML scalar.
+    return f"---\nname: {name}\ndescription: {json.dumps(description)}\n---\n\n"
+
+
+def create(args: argparse.Namespace) -> None:
+    name = args.name
+    if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name):
+        raise SystemExit(f"invalid skill name: {name}")
+
+    source = source_dir()
+    skill = source_skill(source, name) / "SKILL.md"
+    if skill.exists():
+        raise SystemExit(f"skill already exists: {skill}")
+
+    skill.parent.mkdir(parents=True)
+    skill.write_text(render_skill(name, args.description))
+
+    for stub in source_stubs(source, name):
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.symlink_to(f"../../{SHARED}/{name}")
+
+    apply()
+    print(f"created {skill}", file=sys.stderr)
+
+
+def frontmatter(skill: Path) -> dict:
+    lines = (skill / "SKILL.md").read_text().splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+
+    fields = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if line.startswith((" ", "\t")):
+            continue
+        key, separator, value = line.partition(":")
+        if separator:
+            fields[key.strip()] = unquote(value.strip())
+    return fields
+
+
+def unquote(value: str) -> str:
+    if value.startswith('"'):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            pass
+    return value.strip("'")
+
+
+def list_skills(args: argparse.Namespace) -> None:
+    shared = source_dir() / SHARED
+    skills = sorted(
+        entry for entry in shared.iterdir() if (entry / "SKILL.md").is_file()
+    )
+    rows = [
+        {"name": skill.name, "description": frontmatter(skill).get("description", "")}
+        for skill in skills
+    ]
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return
+
+    table = rich.table.Table(box=rich.box.SIMPLE, pad_edge=False, show_edge=False)
+    table.add_column("name", style="bold")
+    table.add_column("description")
+    for row in rows:
+        table.add_row(row["name"], row["description"])
+    rich.console.Console().print(table)
+
+
+def show(args: argparse.Namespace) -> None:
+    skill = source_skill(source_dir(), args.name)
+    if not skill.is_dir():
+        raise SystemExit(f"no such skill: {args.name}")
+    print(skill)
+
+
+def sync(args: argparse.Namespace) -> None:
+    apply()
+
+
+def remove(args: argparse.Namespace) -> None:
+    name = args.name
+    source = source_dir()
+    skill = source_skill(source, name)
+    if not skill.is_dir():
+        raise SystemExit(f"no such skill: {name}")
+
+    shutil.rmtree(skill, ignore_errors=True)
+    for stub in source_stubs(source, name):
+        stub.unlink(missing_ok=True)
+    # `mise dotfiles apply` only writes the entries that are still declared, so
+    # the links left behind by the deleted source have to go explicitly.
+    for target in targets(name):
+        if target.is_symlink():
+            target.unlink()
+        else:
+            shutil.rmtree(target, ignore_errors=True)
+    print(f"removed {name}", file=sys.stderr)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Manage skills shared between Claude Code and Codex."
+    )
+    sub = parser.add_subparsers(required=True)
+    new = sub.add_parser("new", help="scaffold a new shared skill")
+    new.add_argument("name")
+    new.add_argument("--description", default=PLACEHOLDER)
+    new.set_defaults(func=create)
+    listing = sub.add_parser("list", help="list shared skills with their descriptions")
+    listing.add_argument("--json", action="store_true", help="emit JSON, not a table")
+    listing.set_defaults(func=list_skills)
+    showing = sub.add_parser("show", help="print the editable path of a shared skill")
+    showing.add_argument("name")
+    showing.set_defaults(func=show)
+    push = sub.add_parser("sync", help="publish edited skills to both agents")
+    push.set_defaults(func=sync)
+    delete = sub.add_parser("remove", help="delete a shared skill")
+    delete.add_argument("name")
+    delete.set_defaults(func=remove)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

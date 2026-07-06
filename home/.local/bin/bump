@@ -1,0 +1,194 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = []
+# ///
+"""Bump a mise tool stub to the latest published release."""
+
+import argparse
+import json
+import subprocess
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+CODE_RELEASES_API = "https://update.code.visualstudio.com/api/releases/stable"
+CODE_DOWNLOAD = "https://update.code.visualstudio.com/{version}/linux-{arch}/stable"
+ZED_RELEASE_API = "https://api.github.com/repos/daandemeyer/zed/releases?per_page=100"
+ZED_ASSETS = {
+    "x64": "zed-linux-x86_64.tar.gz",
+}
+CLAUDE_RELEASES = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
+CLAUDE_PLATFORMS = {
+    "linux-x64": "linux-x64",
+    "linux-x64-musl": "linux-x64-musl",
+    "linux-arm64": "linux-arm64",
+    "linux-arm64-musl": "linux-arm64-musl",
+}
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def fetch_code_version() -> str:
+    with urllib.request.urlopen(CODE_RELEASES_API) as response:
+        return json.load(response)[0]
+
+
+def fetch_code_build(version: str, arch: str) -> dict[str, str]:
+    request = urllib.request.Request(
+        CODE_DOWNLOAD.format(version=version, arch=arch), method="HEAD"
+    )
+    try:
+        urllib.request.build_opener(NoRedirect).open(request)
+    except urllib.error.HTTPError as response:
+        if response.code != 302:
+            raise
+        headers = response.headers
+    else:
+        raise RuntimeError(f"expected a download redirect for linux-{arch}")
+
+    return {
+        "url": headers["Location"],
+        "checksum": f'sha256:{headers["x-sha256"]}',
+    }
+
+
+def fetch_zed_release() -> dict:
+    request = urllib.request.Request(
+        ZED_RELEASE_API,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    with urllib.request.urlopen(request) as response:
+        releases = json.load(response)
+
+    try:
+        return next(release for release in releases if not release["draft"])
+    except StopIteration:
+        raise RuntimeError("repository has no published releases") from None
+
+
+def find_zed_asset(release: dict, name: str) -> dict[str, str]:
+    try:
+        asset = next(asset for asset in release["assets"] if asset["name"] == name)
+    except StopIteration:
+        raise RuntimeError(f"release is missing {name}") from None
+
+    digest = asset.get("digest")
+    if not digest or not digest.startswith("sha256:"):
+        raise RuntimeError(f"release asset {name} has no sha256 digest")
+
+    return {
+        "url": asset["browser_download_url"],
+        "checksum": digest,
+    }
+
+
+def fetch_claude_release() -> tuple[str, dict[str, dict[str, str]]]:
+    with urllib.request.urlopen(f"{CLAUDE_RELEASES}/latest") as response:
+        version = response.read().decode().strip()
+    with urllib.request.urlopen(
+        f"{CLAUDE_RELEASES}/{version}/manifest.json"
+    ) as response:
+        platforms = json.load(response)["platforms"]
+
+    builds = {}
+    for source, target in CLAUDE_PLATFORMS.items():
+        build = platforms.get(source)
+        if build is None:
+            continue
+        builds[target] = {
+            "url": f"{CLAUDE_RELEASES}/{version}/{source}/{build['binary']}",
+            "checksum": f"sha256:{build['checksum']}",
+        }
+    if not builds:
+        raise RuntimeError(f"release {version} publishes no known platforms")
+    return version, builds
+
+
+def render_stub(
+    binary: str, version: str, builds: dict[str, dict[str, str]]
+) -> str:
+    lines = [
+        "#!/usr/bin/env -S mise tool-stub",
+        "",
+        f'version = "{version}"',
+        f'bin = "{binary}"',
+    ]
+    for platform, build in builds.items():
+        lines += [
+            "",
+            f"[platforms.{platform}]",
+            f'url = "{build["url"]}"',
+            f'checksum = "{build["checksum"]}"',
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def release_for(app: str) -> tuple[str, str, dict[str, dict[str, str]]]:
+    if app == "code":
+        version = fetch_code_version()
+        builds = {
+            f"linux-{arch}": fetch_code_build(version, arch)
+            for arch in ("x64", "arm64")
+        }
+        return version, "bin/code", builds
+
+    if app == "claude":
+        version, builds = fetch_claude_release()
+        return version, "claude", builds
+
+    release = fetch_zed_release()
+    version = release["tag_name"].removeprefix("v")
+    builds = {
+        f"linux-{arch}": find_zed_asset(release, name)
+        for arch, name in ZED_ASSETS.items()
+    }
+    return version, "bin/zed", builds
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Bump a tool's mise stub to its latest release."
+    )
+    app = parser.add_mutually_exclusive_group(required=True)
+    app.add_argument("--code", dest="app", action="store_const", const="code")
+    app.add_argument("--zed", dest="app", action="store_const", const="zed")
+    app.add_argument("--claude", dest="app", action="store_const", const="claude")
+    return parser.parse_args()
+
+
+def source_dir() -> Path:
+    root = subprocess.run(
+        ["mise", "settings", "get", "dotfiles.root"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return Path(root).expanduser()
+
+
+def main() -> None:
+    app = parse_args().app
+    # The launcher is a symlink to the stub, so writing the stub is the apply.
+    stub = source_dir() / ".local/bin" / app
+
+    version, binary, builds = release_for(app)
+    contents = render_stub(binary, version, builds)
+    if stub.read_text() == contents:
+        print(f"already up to date ({version})")
+        return
+
+    stub.write_text(contents)
+    # Pre-download so desktop launches don't stall.
+    subprocess.run([app, "--version"], check=True, stdout=subprocess.DEVNULL)
+    print(f"updated to {version}")
+
+
+if __name__ == "__main__":
+    main()

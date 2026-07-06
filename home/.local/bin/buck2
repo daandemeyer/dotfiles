@@ -1,0 +1,23 @@
+#!/usr/bin/env -S mise tool-stub
+
+bin = "buck2"
+
+[platforms.linux-arm64]
+url = "https://github.com/daandemeyer/buck2/releases/download/2026-07-06-22.30.19/buck2-aarch64-unknown-linux-musl.zst"
+checksum = "blake3:dcd951d3966bda570404bf9ec2ac44cde3c43f046e90e324008dc6ef7190ba7b"
+size = 37023711 # 35.3 MiB
+
+[platforms.linux-arm64-musl]
+url = "https://github.com/daandemeyer/buck2/releases/download/2026-07-06-22.30.19/buck2-aarch64-unknown-linux-musl.zst"
+checksum = "blake3:dcd951d3966bda570404bf9ec2ac44cde3c43f046e90e324008dc6ef7190ba7b"
+size = 37023711 # 35.3 MiB
+
+[platforms.linux-x64]
+url = "https://github.com/daandemeyer/buck2/releases/download/2026-07-06-22.30.19/buck2-x86_64-unknown-linux-musl.zst"
+checksum = "blake3:730ad3f6975dce58dbd9b14fa968d164e2a7eca782bbd433f1145bf66d7a56f5"
+size = 38708753 # 36.9 MiB
+
+[platforms.linux-x64-musl]
+url = "https://github.com/daandemeyer/buck2/releases/download/2026-07-06-22.30.19/buck2-x86_64-unknown-linux-musl.zst"
+checksum = "blake3:730ad3f6975dce58dbd9b14fa968d164e2a7eca782bbd433f1145bf66d7a56f5"
+size = 38708753 # 36.9 MiB

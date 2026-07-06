@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# `cc` and `c++` drivers backed by zig, for machines with no system C toolchain. Kept out of
+# ~/.local/bin so nothing picks them up implicitly; opt in per project with
+#
+#   [env]
+#   _.path = ["{{env.ZIG_CC_BIN}}"]
+#
+# or ad hoc, without touching the project, with MISE_ENV=zigcc. Naming them `cc`/`c++` is what
+# makes PATH alone enough: they are the defaults rustc and the `cc` crate already reach for, so
+# no per-project cargo linker config is needed. `c++` is a symlink to this file.
+
+set -euo pipefail
+
+case "${0##*/}" in
+    c++ | cxx) driver=c++ ;;
+    *) driver=cc ;;
+esac
+
+# `cc`-crate build scripts pass Rust's four-component target triple through verbatim; zig only
+# knows the three-component form.
+args=()
+for arg in "$@"; do
+    case "$arg" in
+        --target=x86_64-unknown-linux-gnu)
+            args+=(--target=x86_64-linux-gnu)
+            ;;
+        *)
+            args+=("$arg")
+            ;;
+    esac
+done
+
+exec zig "$driver" "${args[@]}"

@@ -1,0 +1,75 @@
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+service_tier = "priority"
+
+approvals_reviewer = "auto_review"
+default_permissions = "jj-workspace"
+
+[projects."{{ env.HOME }}/Projects/notify"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/dotfiles"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/mise"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/buck2"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/linux"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/btrfs-progs"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/xfstests"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/systemd"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/libarchive"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/tar"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/dpkg"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/poc-buck"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/rpm"]
+trust_level = "trusted"
+
+[projects."{{ env.HOME }}/Projects/zig"]
+trust_level = "trusted"
+
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"
+
+[tui.model_availability_nux]
+"gpt-5.6-sol" = 4
+
+[permissions.jj-workspace]
+description = "Workspace access with writable Git metadata."
+extends = ":workspace"
+
+[permissions.jj-workspace.workspace_roots]
+"{{ env.HOME }}/.cache" = true
+
+[permissions.jj-workspace.filesystem.":workspace_roots"]
+".git" = "write"
+
+[shell_environment_policy]
+inherit = "all"
+set = { BASH_ENV = "{{ env.HOME }}/.codex/mise-bash-env.sh" }
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "{{ env.HOME }}/.local/bin/context-canary"
+timeout = 15

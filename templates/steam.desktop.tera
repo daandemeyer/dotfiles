@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Steam
+Comment=Application for managing and playing games on Steam
+TryExec={{ env.HOME }}/.local/bin/steam
+Exec={{ env.HOME }}/.local/bin/steam %U
+Icon={{ env.HOME }}/.local/share/mise/installs/http-steam-launcher/latest/icons/256/steam.png
+Terminal=false
+StartupNotify=true
+StartupWMClass=Steam
+Categories=Game;
+MimeType=x-scheme-handler/steam;x-scheme-handler/steamlink;

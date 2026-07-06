@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+steam_root="${XDG_DATA_HOME:-$HOME/.local/share}/Steam"
+
+if [[ ! -x "$steam_root/steamrt64/steam" ]]; then
+    if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
+        printf '%s\n' 'The SteamRT3 client requires x86-64 Linux.' >&2
+        exit 1
+    fi
+
+    steam_bootstrap=$(mktemp -d /var/tmp/steam-bootstrap.XXXXXX)
+    trap 'rm -rf -- "$steam_bootstrap"' EXIT
+
+    # Steam beta 1789086785. Steam updates itself after this initial bootstrap.
+    curl --fail --location --retry 3 --connect-timeout 15 --max-time 120 \
+        --output "$steam_bootstrap/steam.zip" \
+        https://media.steampowered.com/client/steam_steamrt_ubuntu12.zip.8fb814ff2109389ac31b4f003e2419908c22f4a4
+    printf '%s  %s\n' \
+        70c5fd0c1be6111a66f4efb57e0b59231029eafb21a658a78c9c8ffe7661ed7c \
+        "$steam_bootstrap/steam.zip" | sha256sum --check
+
+    # Valve prepends a 20-byte header to this ZIP archive.
+    tail -c +21 "$steam_bootstrap/steam.zip" \
+        | bsdtar -xf - -C "$steam_bootstrap" steamrt64/steam
+
+    install -Dm755 "$steam_bootstrap/steamrt64/steam" "$steam_root/steamrt64/steam"
+
+    rm -rf -- "$steam_bootstrap"
+    trap - EXIT
+fi
+
+# Also select SteamRT3 when migrating an existing beta installation.
+mkdir -p "$steam_root/package"
+printf '%s\n' publicbeta > "$steam_root/package/beta"
+touch "$steam_root/.steam-enable-steamrt64-client"
+
+cd "$steam_root"
+# Wayland requires portal-based display capture when Steam is minimized.
+exec "$steam_root/steamrt64/steam" -pipewire "$@"

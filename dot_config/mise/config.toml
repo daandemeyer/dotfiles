@@ -1,5 +1,0 @@
-[settings]
-idiomatic_version_file_enable_tools = ["rust"]
-
-[tools]
-rust = "1.96.0"

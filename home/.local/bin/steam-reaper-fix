@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly reaper_rpm_url=https://download.copr.fedorainfracloud.org/results/playtron/gaming/fedora-43-x86_64/10268148-reaper/reaper-0.1.0-3.fc43.x86_64.rpm
+readonly reaper_rpm_sha256=9e2f97e8ff5850ceb54e43fc53a180e06dd4b2e116bc19d22dd58c87b5d6041c
+readonly reaper_sha256=42ceee57077a9a4d6899c470391c8279495eb0fb5058fe135d25a4d385e7d3ee
+
+if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
+    printf '%s\n' 'The 64-bit Steam reaper replacement requires x86-64 Linux.' >&2
+    exit 1
+fi
+
+steam_root="${XDG_DATA_HOME:-$HOME/.local/share}/Steam"
+target="$steam_root/steamrt64/reaper"
+
+if [[ ! -d $steam_root/steamrt64 ]]; then
+    printf 'SteamRT3 is not installed at %s\n' "$steam_root" >&2
+    exit 1
+fi
+
+if [[ -f $target ]] && printf '%s  %s\n' "$reaper_sha256" "$target" \
+    | sha256sum --check --status; then
+    printf '%s\n' 'The 64-bit Steam reaper replacement is already installed.'
+    exit 0
+fi
+
+if pgrep -x reaper >/dev/null; then
+    printf '%s\n' 'A Steam reaper process is running. Exit the game and try again.' >&2
+    exit 1
+fi
+
+work_dir=$(mktemp -d /var/tmp/steam-reaper-fix.XXXXXX)
+staged_reaper="$target.new"
+trap 'rm -rf -- "$work_dir"; rm -f -- "$staged_reaper"' EXIT
+
+curl --fail --silent --show-error --location --retry 3 \
+    --connect-timeout 15 --max-time 120 \
+    --output "$work_dir/reaper.rpm" "$reaper_rpm_url"
+printf '%s  %s\n' "$reaper_rpm_sha256" "$work_dir/reaper.rpm" \
+    | sha256sum --check
+
+bsdtar -xf "$work_dir/reaper.rpm" -C "$work_dir" \
+    ./usr/libexec/playtron/reaper
+replacement="$work_dir/usr/libexec/playtron/reaper"
+printf '%s  %s\n' "$reaper_sha256" "$replacement" | sha256sum --check
+
+install -m755 "$replacement" "$staged_reaper"
+mv -f -- "$staged_reaper" "$target"
+
+printf '%s  %s\n' "$reaper_sha256" "$target" | sha256sum --check --status
+printf 'Restored the 64-bit Steam reaper at %s\n' "$target"

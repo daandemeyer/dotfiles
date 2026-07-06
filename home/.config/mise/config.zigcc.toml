@@ -1,0 +1,3 @@
+# Loaded only when MISE_ENV=zigcc, for projects that should not carry the opt-in themselves.
+[env]
+_.path = ["{{env.ZIG_CC_BIN}}"]

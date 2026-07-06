@@ -1,0 +1,20 @@
+#!/usr/bin/env -S mise tool-stub
+
+version = "2.1.220"
+bin = "claude"
+
+[platforms.linux-x64]
+url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.220/linux-x64/claude"
+checksum = "sha256:674f61f20ff306f3100cf9200e4c36c4b70278b5bef2884549819b942a89c863"
+
+[platforms.linux-x64-musl]
+url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.220/linux-x64-musl/claude"
+checksum = "sha256:f1c20514a3571cdf9982e25c490042d740ed7cfed3f00c64ba92dc7ec47c3c5b"
+
+[platforms.linux-arm64]
+url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.220/linux-arm64/claude"
+checksum = "sha256:159e4a51d796f3bf14677577100f7efb845611b1ceaf0c30cbd8d4650d942185"
+
+[platforms.linux-arm64-musl]
+url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.220/linux-arm64-musl/claude"
+checksum = "sha256:5eb2697a1500c1b8736e53fd696392196dc6758cf1d470c64d8d2a2fd1629eeb"

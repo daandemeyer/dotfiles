@@ -1,0 +1,18 @@
+// Key bindings migrated from VS Code where Zed has an equivalent action.
+[
+  {
+    "bindings": {
+      "ctrl-m": "workspace::ToggleZoom",
+      "ctrl-shift-t": "workspace::NewTerminal",
+      "ctrl-alt-t": "terminal_panel::ToggleFocus",
+      "ctrl-alt-i": "agent::ToggleFocus"
+    }
+  },
+  {
+    "context": "Terminal",
+    "bindings": {
+      "ctrl-t": "tab_switcher::Toggle",
+      "ctrl-shift-w": "pane::CloseActiveItem"
+    }
+  }
+]

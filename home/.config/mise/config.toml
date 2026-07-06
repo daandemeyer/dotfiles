@@ -1,0 +1,86 @@
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]
+dotfiles.root = "~/Projects/dotfiles/home"
+
+[env]
+# The claude tool stub pins the version; its self-updater would overwrite it.
+DISABLE_AUTOUPDATER = "1"
+PYTHONPYCACHEPREFIX = "{{env.HOME}}/.cache/python"
+ZIG_CC_BIN = "{{env.HOME}}/.local/libexec/zig-cc"
+
+[tools]
+# Not a program to run, just the upstream source of the Steam desktop icon.
+# bin_path points at a directory with no executables: the archive ships its own
+# `steam` wrapper, which would otherwise shadow ~/.local/bin/steam on PATH.
+"http:steam-launcher" = { version = "1.0.0.87", url = "https://repo.steampowered.com/steam/archive/stable/steam_1.0.0.87.tar.gz", checksum = "sha256:649375d2f9377f8009aaf3e2ff09978041eb9114897d9c5a3886f1d82e27ba1f", strip_components = 1, bin_path = "icons" }
+
+[bootstrap.hooks]
+post-dotfiles = "{{env.HOME}}/Projects/dotfiles/hooks/update-desktop-database"
+
+# Sources without an explicit `source` resolve under `dotfiles.root`.
+[dotfiles]
+"~/.bash_logout" = { mode = "symlink" }
+"~/.bash_profile" = { mode = "symlink" }
+"~/.bashrc" = { mode = "symlink" }
+"~/.gitconfig" = { mode = "symlink" }
+
+"~/.claude/CLAUDE.md" = { mode = "symlink" }
+"~/.claude/mise-bash-env.sh" = { mode = "symlink" }
+"~/.codex/AGENTS.md" = { mode = "symlink" }
+"~/.codex/mise-bash-env.sh" = { mode = "symlink" }
+
+"~/.config/Code/User" = { mode = "symlink-each" }
+"~/.config/fish" = { mode = "symlink-each" }
+"~/.config/git" = { mode = "symlink-each" }
+"~/.config/jj" = { mode = "symlink-each" }
+"~/.config/mise" = { mode = "symlink-each" }
+"~/.config/starship.toml" = { mode = "symlink" }
+"~/.config/zed" = { mode = "symlink-each" }
+
+"~/.local/bin" = { mode = "symlink-each", exclude = ["__pycache__"] }
+"~/.local/libexec/zig-cc" = { mode = "symlink-each" }
+"~/.local/share/agent-skills" = { mode = "symlink-each" }
+
+# Per skill, not the directory itself: Codex owns `~/.codex/skills/.system`.
+"~/.claude/skills" = { mode = "symlink-each" }
+"~/.codex/skills" = { mode = "symlink-each" }
+
+"~/.codex/config.toml" = { source = "~/Projects/dotfiles/templates/codex-config.toml.tera", mode = "template" }
+"~/.local/share/applications/code.desktop" = { source = "~/Projects/dotfiles/templates/code.desktop.tera", mode = "template" }
+"~/.local/share/applications/dev.zed.Zed.desktop" = { source = "~/Projects/dotfiles/templates/dev.zed.Zed.desktop.tera", mode = "template" }
+"~/.local/share/applications/steam.desktop" = { source = "~/Projects/dotfiles/templates/steam.desktop.tera", mode = "template" }
+
+# Files this repo used to manage.
+"~/.claude/direnv-bash-env.sh" = { mode = "absent" }
+"~/.config/chezmoi/chezmoi.toml" = { mode = "absent" }
+"~/.local/bin/c++" = { mode = "absent" }
+"~/.local/bin/cargo" = { mode = "absent" }
+"~/.local/bin/cargo-clippy" = { mode = "absent" }
+"~/.local/bin/cargo-fmt" = { mode = "absent" }
+"~/.local/bin/cargo-miri" = { mode = "absent" }
+"~/.local/bin/cc" = { mode = "absent" }
+"~/.local/bin/chezmoi" = { mode = "absent" }
+"~/.local/bin/clang-format" = { mode = "absent" }
+"~/.local/bin/clang-tidy" = { mode = "absent" }
+"~/.local/bin/clangd" = { mode = "absent" }
+"~/.local/bin/clippy-driver" = { mode = "absent" }
+"~/.local/bin/code-bump" = { mode = "absent" }
+"~/.local/bin/code-update" = { mode = "absent" }
+"~/.local/bin/direnv" = { mode = "absent" }
+"~/.local/bin/dotslash" = { mode = "absent" }
+"~/.local/bin/gperf" = { mode = "absent" }
+"~/.local/bin/meson" = { mode = "absent" }
+"~/.local/bin/ninja" = { mode = "absent" }
+"~/.local/bin/python" = { mode = "absent" }
+"~/.local/bin/python3" = { mode = "absent" }
+"~/.local/bin/rust-analyzer" = { mode = "absent" }
+"~/.local/bin/rust-gdb" = { mode = "absent" }
+"~/.local/bin/rust-gdbgui" = { mode = "absent" }
+"~/.local/bin/rust-lldb" = { mode = "absent" }
+"~/.local/bin/rustc" = { mode = "absent" }
+"~/.local/bin/rustdoc" = { mode = "absent" }
+"~/.local/bin/rustfmt" = { mode = "absent" }
+"~/.local/bin/rustup" = { mode = "absent" }
+"~/.local/bin/zed-bump" = { mode = "absent" }
+"~/.local/share/icons/hicolor/256x256/apps/code.png" = { mode = "absent" }
+"~/.local/share/icons/hicolor/256x256/apps/steam.png" = { mode = "absent" }

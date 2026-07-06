@@ -1,0 +1,6 @@
+**/.claude/settings.local.json
+__pycache__/
+*.py[cod]
+mkosi.tools/
+mkosi.tools.manifest
+mkosi.local.conf

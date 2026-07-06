@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Stop hook for Claude Code and Codex that verifies the context canary.
+
+AGENTS.md instructs the agent to end every reply with a canary marker. When a
+reply arrives without it, the global instructions have likely fallen out of the
+context window, so block the stop with a reason that makes the agent re-read
+its instruction files and surface a systemMessage suggesting /compact. Neither
+harness lets a hook trigger compaction directly.
+"""
+
+import json
+import sys
+
+CANARY = "🐤"
+
+REASON = (
+    "Context canary missing: your last reply did not contain the "
+    f"{CANARY} marker required by your global instructions, which means "
+    "those instructions have likely fallen out of the context window. "
+    "Re-read ~/.codex/AGENTS.md (and ~/.claude/CLAUDE.md when running as "
+    "Claude Code), follow them again from now on, and tell the user to run "
+    "/compact to restore a clean context. End this and every future reply "
+    "with the canary marker."
+)
+
+SYSTEM_MESSAGE = (
+    "Context canary missing from the last reply — global instructions may "
+    "have dropped out of context. Consider running /compact."
+)
+
+
+def last_assistant_text(transcript_path):
+    """Return the text of the last main-thread assistant message in a Claude
+    Code transcript, or None if there is none."""
+    text = None
+    try:
+        with open(transcript_path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") != "assistant" or entry.get("isSidechain"):
+                    continue
+                content = entry.get("message", {}).get("content")
+                if isinstance(content, str):
+                    parts = [content]
+                elif isinstance(content, list):
+                    parts = [
+                        c.get("text", "")
+                        for c in content
+                        if isinstance(c, dict) and c.get("type") == "text"
+                    ]
+                else:
+                    continue
+                if any(parts):
+                    text = "\n".join(parts)
+    except OSError:
+        return None
+    return text
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return
+
+    # Set when the turn is already a continuation forced by this hook;
+    # never block twice or the session could loop forever.
+    if payload.get("stop_hook_active"):
+        return
+
+    # Codex delivers the message inline; Claude Code only provides the
+    # transcript path.
+    text = payload.get("last_assistant_message")
+    if text is None:
+        transcript = payload.get("transcript_path")
+        if not transcript:
+            return
+        text = last_assistant_text(transcript)
+
+    # No assistant text (e.g. right after /clear) is not a canary failure.
+    if not text or CANARY in text:
+        return
+
+    json.dump(
+        {"decision": "block", "reason": REASON, "systemMessage": SYSTEM_MESSAGE},
+        sys.stdout,
+    )
+
+
+if __name__ == "__main__":
+    main()

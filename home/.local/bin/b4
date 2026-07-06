@@ -1,0 +1,5 @@
+#!/usr/bin/env -S mise tool-stub
+
+tool = "pipx:b4"
+version = "0.15.2"
+bin = "b4"

@@ -1,0 +1,105 @@
+#:schema https://docs.jj-vcs.dev/latest/config-schema.json
+
+[user]
+name = "Daan De Meyer"
+email = "daan@amutable.com"
+
+[git]
+subprocess = true
+push = "fork"
+fetch = ["origin"]
+
+[remotes.fork]
+fetch-bookmarks = "~*"
+auto-track-bookmarks = "~*"
+auto-track-created-bookmarks = "~*"
+
+[revsets]
+log-graph-prioritize = 'coalesce(megamerge(), trunk())'
+# Bookmarks on my fork are mutable (see `immutable_heads()` below), so a fork bookmark
+# left pointing at a rewritten commit pulls that obsolete commit and its whole ancestry
+# into `immutable_heads()..`. Drop them from the graph.
+log = '(present(@) | ancestors(immutable_heads().., 2) | trunk()) ~ hidden()'
+
+[revset-aliases]
+# Bookmarks pushed to my own fork are not shared history, so they must not freeze the
+# stack they point at.
+'immutable_heads()' = 'builtin_immutable_heads() ~ remote_bookmarks(remote=exact:"fork")'
+
+'megamerge()' = 'coalesce(present(megamerge), reachable(stack(), merges()))'
+
+'stack()' = 'stack(@)'
+'stack(x)' = 'stack(x, 2)'
+'stack(x, n)' = 'ancestors(reachable(x, mutable()), n)'
+
+[aliases]
+# `jj stack <revset>` to include specific revs
+stack = ["util", "exec", "--", "bash", "-c", '''
+set -euo pipefail
+jj rebase --after "trunk()" --before "megamerge()" --revision "$@" --simplify-parents
+# Reuse the working-copy commit if it still sits on top of megamerge. An empty @
+# may be abandoned by the rebase (dropping @ onto megamerge), so start a new one then.
+if [ -z "$(jj log --no-graph -r '@ & megamerge()+' -T 'change_id')" ]; then
+    jj new "megamerge()"
+fi
+''', "--"]
+
+# `jj unstack <revset>` to remove specific revs
+unstack = ["rebase", "--onto", "trunk()", "--revision"]
+
+restack = ["rebase", "--onto", "trunk()", "--source", "roots(trunk()..) & stack()", "--simplify-parents", "--skip-emptied"]
+
+pr = ["util", "exec", "--", "bash", "-c", '''
+set -euo pipefail
+remote=$(jj config get git.push 2>/dev/null || echo origin)
+url=$(jj git remote list | awk -v r="$remote" '$1 == r { print $2; exit }')
+[ -n "$url" ] || { echo "jj pr: no such remote: $remote" >&2; exit 1; }
+owner=$(gh repo view "$url" --json owner --jq '.owner.login')
+base=$(jj log --no-graph -r 'trunk()' -T 'remote_bookmarks.filter(|b| b.remote() != "git").map(|b| b.name()).join("\n") ++ "\n"' | head -n1)
+names='bookmarks.map(|b| b.name()).join("\n") ++ "\n"'
+push=()
+for rev in "$@"; do
+    bookmarks=$(jj log -r "$rev" --no-graph -T "$names")
+    # gh needs a branch on the remote, so give an unbookmarked revision the usual push-* one.
+    if [ -z "$bookmarks" ]; then
+        push+=(--change "$rev")
+        continue
+    fi
+    while read -r b; do
+        [ -n "$b" ] || continue
+        push+=(--bookmark "exact:$b")
+    done <<< "$bookmarks"
+done
+[ "${#push[@]}" -eq 0 ] || jj git push "${push[@]}"
+for rev in "$@"; do
+    jj log -r "$rev" --no-graph -T "$names" | while read -r b; do
+        [ -n "$b" ] || continue
+        gh pr create --fill --head "$owner:$b" --base "$base"
+    done
+done
+''', "--"]
+
+# `jj pr-checkout <number> [remote]` to work on someone else's PR
+pr-checkout = ["util", "exec", "--", "bash", "-c", '''
+set -euo pipefail
+pr="${1:?usage: jj pr-checkout <number> [remote]}"
+remote="${2:-origin}"
+# jj cannot fetch refs/pull/*, so let git do it and import the result. The leading
+# `+` keeps a force-pushed PR from failing to update.
+git_dir=$(git -C "$JJ_WORKSPACE_ROOT" rev-parse --absolute-git-dir 2>/dev/null \
+    || printf '%s' "$JJ_WORKSPACE_ROOT/.jj/repo/store/git")
+git --git-dir="$git_dir" fetch "$remote" "+refs/pull/$pr/head:refs/heads/pr-$pr"
+jj git import
+jj new "pr-$pr"
+''', "--"]
+
+[ui]
+default-command = "log"
+editor = "systemd-run --user --pipe --wait --collect --quiet zed --wait"
+conflict-marker-style = "git"
+
+[template-aliases]
+'format_timestamp(timestamp)' = '""'
+
+[templates]
+commit_trailers = 'format_signed_off_by_trailer(self)'

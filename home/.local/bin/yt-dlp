@@ -1,0 +1,37 @@
+#!/usr/bin/env -S mise tool-stub
+
+tool = "yt-dlp"
+version = "2026.08.19"
+bin = "yt-dlp"
+
+[lock]
+
+[lock.platforms]
+
+[lock.platforms.linux-arm64]
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_linux_aarch64.zip"
+checksum = "sha256:4e27ad43f3a34bacffd078694eb3edbb4e3b378e7da44edab2be02e98555516e"
+
+[lock.platforms.linux-arm64-musl]
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_musllinux_aarch64.zip"
+checksum = "sha256:46087f4965f48612d056c6e4b00a0898e8230ba90d709a0a751c7cc5735a1da3"
+
+[lock.platforms.linux-x64]
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_linux.zip"
+checksum = "sha256:32e72032766bef9199d99d15beb69fd52e46df8f8b06f0d8745db59e04d339e9"
+
+[lock.platforms.linux-x64-musl]
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_musllinux.zip"
+checksum = "sha256:a8a9761628be455368db73ab54a2858da22342084f300f7e0d50bdcbef2acf82"
+
+[lock.platforms.macos-arm64]
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_macos.zip"
+checksum = "sha256:07e54b0865303c864006925913bce2604f8ee8cc6f18699bac9c309f9328a6d8"
+
+[lock.platforms.macos-x64]
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_macos.zip"
+checksum = "sha256:07e54b0865303c864006925913bce2604f8ee8cc6f18699bac9c309f9328a6d8"
+
+[lock.platforms.windows-x64]
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_win_x86.zip"
+checksum = "sha256:dc7c11f014af67f23d9fd989868048abedbce01709ff642a29eb3f7578b802f7"

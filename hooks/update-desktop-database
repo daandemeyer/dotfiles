@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Refresh the desktop entry cache after mise writes the .desktop files.
+
+Runs as the post-dotfiles bootstrap hook, which fires on every `mise bootstrap`
+and `mise dotfiles apply`, so it has to stay cheap and repeatable.
+"""
+
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> None:
+    database = shutil.which("update-desktop-database")
+    if database is None:
+        return
+
+    applications = Path.home() / ".local/share/applications"
+    if not applications.is_dir():
+        return
+
+    result = subprocess.run([database, str(applications)])
+    sys.exit(result.returncode)
+
+
+if __name__ == "__main__":
+    main()

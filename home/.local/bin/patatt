@@ -1,0 +1,5 @@
+#!/usr/bin/env -S mise tool-stub
+
+tool = "pipx:patatt"
+version = "0.7.0"
+bin = "patatt"

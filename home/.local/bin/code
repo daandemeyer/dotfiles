@@ -1,0 +1,12 @@
+#!/usr/bin/env -S mise tool-stub
+
+version = "1.128.0"
+bin = "bin/code"
+
+[platforms.linux-x64]
+url = "https://vscode.download.prss.microsoft.com/dbazure/download/stable/fc3def6774c76082adf699d366f31a557ce5573f/code-stable-x64-1783465271.tar.gz"
+checksum = "sha256:a9b4ce974ecc10c7456da9879763bf0a7a432710bd26c95a89a8a168f2aff57b"
+
+[platforms.linux-arm64]
+url = "https://vscode.download.prss.microsoft.com/dbazure/download/stable/fc3def6774c76082adf699d366f31a557ce5573f/code-stable-arm64-1783465268.tar.gz"
+checksum = "sha256:6fd05e1fe7b6f6540fc7a5aee555b49b3f761ef099186b4e2fd0c22d297ef27f"
