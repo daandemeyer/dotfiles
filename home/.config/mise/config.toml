@@ -1,6 +1,7 @@
 [settings]
 idiomatic_version_file_enable_tools = ["rust"]
 dotfiles.root = "~/Projects/dotfiles/home"
+activate_shims = false
 
 [env]
 # The claude tool stub pins the version; its self-updater would overwrite it.

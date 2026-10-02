@@ -47,11 +47,18 @@ trust_level = "trusted"
 [projects."{{ env.HOME }}/Projects/zig"]
 trust_level = "trusted"
 
+[projects."{{ env.HOME }}"]
+trust_level = "trusted"
+
 [mcp_servers.openaiDeveloperDocs]
 url = "https://developers.openai.com/mcp"
 
+[tui]
+screen_reader_detection_done = true
+
 [tui.model_availability_nux]
 "gpt-5.6-sol" = 4
+"gpt-6.1-sol" = 1
 
 [permissions.jj-workspace]
 description = "Workspace access with writable Git metadata."
@@ -73,3 +80,20 @@ set = { BASH_ENV = "{{ env.HOME }}/.codex/mise-bash-env.sh" }
 type = "command"
 command = "{{ env.HOME }}/.local/bin/context-canary"
 timeout = 15
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "{{ env.HOME }}/.local/bin/comment-hook"
+timeout = 30
+
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "{{ env.HOME }}/.local/bin/comment-hook"
+timeout = 30
+
+[hooks.state]
+
+[hooks.state."{{ env.HOME }}/.codex/config.toml:stop:0:0"]
+trusted_hash = "sha256:6140efdd88fe153819822adc83ba76dcb4c77ad3bd8f8b5edd57feaad9a6d5a5"

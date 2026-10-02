@@ -1,0 +1,575 @@
+#!/usr/bin/python3 -SIB
+"""Ask the agent to recheck the comments, documentation and commit messages that it wrote while it
+handled a request.
+
+Claude Code and Codex run this script as a `UserPromptSubmit` hook and as a `Stop` hook. The hook
+input arrives as JSON on stdin. The `UserPromptSubmit` hook records the comments and documentation of
+the files that differ from `HEAD`, and the commit messages that the agent can rewrite. The `Stop` hook
+reports the comments, documentation and commit messages that are new.
+
+Derived from tools/comment_hook.py in tine and systemd.
+"""
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+GUIDELINES = Path.home() / ".codex/AGENTS.md"
+COMMIT_GUIDELINES = Path.home() / ".local/share/agent-skills/version-control/SKILL.md"
+DOC_GUIDELINES = Path.home() / ".local/share/agent-skills/documentation/SKILL.md"
+COMMENTS = "Comments"
+COMMITS = "Commit messages"
+DOC_SECTIONS = ("What goes in", "Words", "Before finishing")
+HASH = {
+    ".bash", ".bxl", ".bzl", ".cmake", ".fish", ".mk", ".nix", ".pl", ".py", ".rb", ".sh", ".toml",
+    ".yaml", ".yml",
+}
+HASH_NAMES = {
+    "BUCK", "CMakeLists.txt", "Dockerfile", "GNUmakefile", "Makefile", "TARGETS", "meson.build",
+    "meson.options", "meson_options.txt",
+}
+SLASHES = {
+    ".c", ".cc", ".cpp", ".css", ".cxx", ".go", ".h", ".hh", ".hpp", ".java", ".js", ".jsx", ".kt",
+    ".proto", ".rs", ".scss", ".swift", ".ts", ".tsx", ".zig",
+}
+DOCSTRINGS = {".bxl", ".bzl", ".py"}
+DOCSTRING_NAMES = {"BUCK", "TARGETS"}
+MARKDOWN = {".markdown", ".md"}
+TEXT_NAMES = {"HACKING", "INSTALL", "NEWS", "README"}
+DOC_DIRECTORIES = {"doc", "docs", "man"}
+ROFF = re.compile(r"\.[1-9]$")
+# These files instruct agents. They are not documentation for people.
+AGENT_NAMES = {"AGENTS.md", "CLAUDE.md", "GEMINI.md", "SKILL.md"}
+AGENT_DIRECTORIES = {".claude", ".codex", "agent-skills", "skills"}
+DOCBOOK_CODE = "programlisting|screen|literallayout|synopsis|cmdsynopsis|funcsynopsis"
+RST_CODE = re.compile(r"\.\.\s+(code-block|code|sourcecode|literalinclude|highlight)::")
+FENCE = re.compile(r"(`{3,}|~{3,})")
+DOC_KINDS = {"markdown", "rst", "roff", "docbook", "text"}
+DIRECTIVE = re.compile(
+    r"SPDX-|noqa\b|type:|ty:|pragma\b|buildifier:|@unused\b|@unsorted-dict-items\b|IWYU\b|NOLINT"
+    r"|nolint\b|shellcheck\b|pylint:|fmt:|-\*-|clang-format\b|eslint|@ts-|go:|rustfmt::|vim:"
+    r"|prettier-ignore|biome-ignore"
+)
+# C code names a literal argument with a comment, as in `/* flags= */ 0`.
+ANNOTATION = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*=")
+C_TOKEN = re.compile(r"[\"'/]")
+SESSION = re.compile(r"[A-Za-z0-9_-]+")
+LIMIT = 100
+NOTIFICATION = "<task-notification>"
+REQUEST = (
+    'Recheck each of them against the "Comments" section of ~/.codex/AGENTS.md, and against the'
+    " project's own rules for comments if it has any, before you stop. Delete the ones that the code"
+    " does not need. Rewrite the ones that break a rule. Leave the ones that comply."
+)
+MESSAGE_REQUEST = (
+    'Recheck each of them against the "Commit messages" section of the version-control skill, and'
+    " against the project's own rules for commit messages if it has any, before you stop. Rewrite the"
+    " ones that break a rule. Leave the ones that comply."
+)
+DOC_REQUEST = (
+    "Recheck each of them, and the paragraph that it belongs to, against the documentation skill and"
+    " against the project's own rules for documentation if it has any, before you stop. Cut what the"
+    " reader does not need. Rewrite what breaks a rule. Leave what complies."
+)
+# Appended to every request, so that the recheck does not add a report to the reply.
+QUIET = (
+    " Do not describe the recheck in your reply: no list of what you rewrote or why. Mention it only"
+    " if a rewrite changes something the user has to know."
+)
+HISTORY = 500
+# `--ignore-working-copy` keeps jj from taking a snapshot, which would add an operation to the log.
+JJ = ["jj", "log", "--ignore-working-copy", "--no-graph", f"--limit={HISTORY}", "--revisions=mutable()"]
+JJ_TEMPLATE = 'change_id.short() ++ "\\0" ++ description ++ "\\0"'
+GIT = ["git", "log", "-z", f"--max-count={HISTORY}", "--format=%h%x00%B"]
+
+
+def marker(path: Path) -> str | None:
+    """Return how the prose of a file is found: a comment sign, or the kind of documentation."""
+    if path.name in HASH_NAMES or path.suffix in HASH:
+        return "#"
+    if path.suffix in SLASHES:
+        return "/*"
+    if path.name in AGENT_NAMES or AGENT_DIRECTORIES.intersection(path.parts):
+        return None
+    if path.suffix in MARKDOWN:
+        return "markdown"
+    if path.suffix == ".rst":
+        return "rst"
+    if ROFF.search(path.name):
+        return "roff"
+    if path.suffix == ".xml" and DOC_DIRECTORIES.intersection(path.parts[:-1]):
+        return "docbook"
+    if path.name in TEXT_NAMES:
+        return "text"
+    return None
+
+
+def has_letters(text: str) -> bool:
+    return re.search(r"[A-Za-z]", text) is not None
+
+
+def markdown_prose(lines: list[str]) -> list[tuple[int, str]]:
+    found: list[tuple[int, str]] = []
+    fence = ""
+    # YAML front matter opens the file with a `---` line and ends at the next one.
+    front = bool(lines) and lines[0].strip() == "---"
+    for number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if front:
+            front = number == 1 or stripped != "---"
+            continue
+        match = FENCE.match(stripped)
+        if fence:
+            if match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
+                fence = ""
+            continue
+        if match:
+            fence = match.group(1)
+            continue
+        if stripped.startswith("<!--") or not has_letters(stripped):
+            continue
+        found.append((number, stripped))
+    return found
+
+
+def indentation(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def rst_prose(lines: list[str]) -> list[tuple[int, str]]:
+    found: list[tuple[int, str]] = []
+    # The indentation of the line that opened a literal block, or None outside of one.
+    block: int | None = None
+    for number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if block is not None:
+            if indentation(line) > block:
+                continue
+            block = None
+        if RST_CODE.match(stripped) or (stripped.endswith("::") and not stripped.startswith("..")):
+            block = indentation(line)
+        if stripped.startswith(".."):
+            continue
+        if has_letters(stripped):
+            found.append((number, stripped.removesuffix("::").strip() or stripped))
+    return found
+
+
+def roff_prose(lines: list[str]) -> list[tuple[int, str]]:
+    found: list[tuple[int, str]] = []
+    literal = False
+    for number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        request = stripped.split()[0] if stripped[:1] in {".", "'"} else ""
+        if request in {".nf", ".EX"}:
+            literal = True
+        elif request in {".fi", ".EE"}:
+            literal = False
+        elif not literal and not request and has_letters(stripped):
+            found.append((number, stripped))
+    return found
+
+
+def docbook_prose(lines: list[str]) -> list[tuple[int, str]]:
+    found: list[tuple[int, str]] = []
+    comment = code = False
+    for number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if comment:
+            comment = "-->" not in stripped
+            continue
+        if stripped.startswith("<!--"):
+            comment = "-->" not in stripped
+            continue
+        if code:
+            code = re.search(rf"</({DOCBOOK_CODE})>", stripped) is None
+            continue
+        if re.search(rf"<({DOCBOOK_CODE})\b", stripped):
+            code = re.search(rf"</({DOCBOOK_CODE})>", stripped) is None
+            continue
+        if stripped.startswith(("<?", "<!")):
+            continue
+        if has_letters(re.sub(r"<[^>]*>|&[A-Za-z0-9#]+;", "", stripped)):
+            found.append((number, stripped))
+    return found
+
+
+def text_prose(lines: list[str]) -> list[tuple[int, str]]:
+    return [(number, line.strip()) for number, line in enumerate(lines, start=1) if has_letters(line)]
+
+
+def has_docstrings(path: Path) -> bool:
+    return path.name in DOCSTRING_NAMES or path.suffix in DOCSTRINGS
+
+
+def is_comment(line: str, sign: str) -> bool:
+    match = re.search(rf"(?:^|\s){re.escape(sign)}\s+(.*)$", line)
+    return match is not None and not DIRECTIVE.match(match.group(1))
+
+
+def is_prose(text: str) -> bool:
+    text = text.strip(" */")
+    return (
+        re.search(r"[A-Za-z]", text) is not None
+        and not DIRECTIVE.match(text)
+        and not ANNOTATION.fullmatch(text)
+    )
+
+
+def c_prose(lines: list[str]) -> list[tuple[int, str]]:
+    """Return the numbered lines of a file with C style comments that hold a comment."""
+    found: list[tuple[int, str]] = []
+    inside = False
+    for number, line in enumerate(lines, start=1):
+        # A comment needs a `/` to start, so a line outside of a comment without one has none.
+        if not inside and "/" not in line:
+            continue
+        parts: list[str] = []
+        i = 0
+        while i < len(line):
+            if inside:
+                end = line.find("*/", i)
+                if end < 0:
+                    parts.append(line[i:])
+                    break
+                parts.append(line[i:end])
+                inside = False
+                i = end + 2
+                continue
+            match = C_TOKEN.search(line, i)
+            if match is None:
+                break
+            i = match.start()
+            quote = line[i]
+            if quote in "\"'":
+                # Skip the literal, so that a path like "/run/*" does not start a comment.
+                i += 1
+                while i < len(line) and line[i] != quote:
+                    i += 2 if line[i] == "\\" else 1
+                i += 1
+            elif line.startswith("//", i):
+                parts.append(line[i + 2 :])
+                break
+            elif line.startswith("/*", i):
+                inside = True
+                i += 2
+            else:
+                i += 1
+        if any(is_prose(part) for part in parts):
+            found.append((number, line.strip()))
+    return found
+
+
+def prose(path: Path, lines: list[str]) -> list[tuple[int, str]]:
+    """Return the numbered lines of a file that hold a comment, a part of a docstring or documentation."""
+    sign = marker(path)
+    if sign is None:
+        return []
+    if sign == "/*":
+        return c_prose(lines)
+    if sign in DOC_KINDS:
+        parsers = {
+            "markdown": markdown_prose,
+            "rst": rst_prose,
+            "roff": roff_prose,
+            "docbook": docbook_prose,
+            "text": text_prose,
+        }
+        return parsers[sign](lines)
+    found: list[tuple[int, str]] = []
+    inside = docstring = False
+    previous = ""
+    for number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        # A docstring is the first statement of a file, or it follows the `:` of a `def` or `class`.
+        # A string that starts a line after `(` or `=` is an argument or a value.
+        follows = not previous or previous.endswith(":")
+        opens = has_docstrings(path) and follows and re.match(r'[rR]?"""', stripped) is not None
+        if not inside and stripped and not stripped.startswith(sign):
+            previous = stripped
+        # An odd number of `"""` on a line starts or ends a string that spans several lines.
+        toggles = has_docstrings(path) and stripped.count('"""') % 2 == 1
+        if inside:
+            listed = docstring
+            inside = not toggles
+        elif toggles:
+            inside = True
+            listed = docstring = opens
+        else:
+            listed = opens or is_comment(line, sign)
+        if listed and re.search(r"[A-Za-z]", stripped):
+            found.append((number, stripped))
+    return found
+
+
+def digest(text: str) -> str:
+    return hashlib.blake2b(text.encode(), digest_size=8).hexdigest()
+
+
+def capture(command: list[str], root: Path) -> str | None:
+    """Return the output of a command that runs in `root`, or None if the command fails."""
+    try:
+        run = subprocess.run(
+            command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, encoding="utf-8"
+        )
+    except (OSError, UnicodeDecodeError):
+        return None
+    return run.stdout if run.returncode == 0 else None
+
+
+def split(listing: str | None) -> list[str]:
+    return [name for name in (listing or "").split("\0") if name]
+
+
+def changed(root: Path, head: str | None) -> list[str]:
+    """Return the files with comments that differ from `head` or that git does not track yet."""
+    if head:
+        names = split(capture(["git", "diff", "--name-only", "--no-renames", "-z", head], root))
+        names += split(capture(["git", "ls-files", "--others", "--exclude-standard", "-z"], root))
+    else:
+        names = split(capture(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], root))
+    return sorted({name for name in names if marker(Path(name)) is not None})
+
+
+def read(root: Path, name: str) -> list[str] | None:
+    try:
+        return (root / name).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def committed(root: Path, head: str, names: list[str]) -> dict[str, list[str]]:
+    """Return the lines that the files have in `head`. A file that `head` lacks is left out."""
+    request = "".join(f"{head}:{name}\n" for name in names)
+    try:
+        run = subprocess.run(
+            ["git", "cat-file", "--batch"],
+            cwd=root,
+            input=request.encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return {}
+    output = run.stdout
+    found: dict[str, list[str]] = {}
+    position = 0
+    for name in names:
+        end = output.find(b"\n", position)
+        if end < 0:
+            break
+        header = output[position:end].split()
+        position = end + 1
+        if len(header) != 3 or header[1] != b"blob":
+            continue
+        size = int(header[2])
+        content = output[position : position + size]
+        # Each object ends with a newline that is not part of its content.
+        position += size + 1
+        try:
+            found[name] = content.decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            continue
+    return found
+
+
+def messages(root: Path) -> list[tuple[str, str]]:
+    """Return the id and the message of the commits that the agent can have written.
+
+    In a jj repository, these commits are the mutable commits. In a git repository, they are the
+    last commits of `HEAD`.
+    """
+    uses_jj = any((directory / ".jj").is_dir() for directory in (root, *root.parents))
+    log = (capture([*JJ, "--template", JJ_TEMPLATE], root) if uses_jj else None) or capture(GIT, root)
+    fields = (log or "").split("\0")
+    return [
+        (name.strip(), text.strip())
+        for name, text in zip(fields[0::2], fields[1::2])
+        if text.strip()
+    ]
+
+
+def section(path: Path, heading: str) -> str:
+    """Return the text of a section of a markdown file up to its first code block."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    _, _, found = text.partition(f"\n## {heading}\n")
+    paragraphs = found.split("\n## ")[0].split("\n```")[0].strip().split("\n\n")
+    # Drop the paragraph that introduces the code block, as in "A whole commit body, in full:".
+    if paragraphs[-1].endswith(":"):
+        paragraphs.pop()
+    return "\n\n".join(paragraphs)
+
+
+def rules() -> str:
+    return section(GUIDELINES, COMMENTS)
+
+
+def message_rules() -> str:
+    """Return the commit message rules, followed by the list of rules for comments.
+
+    The commit message rules refer to the rules for comments, so the agent needs both.
+    """
+    _, found, sentences = rules().partition("\n- ")
+    parts = (section(COMMIT_GUIDELINES, COMMITS), "- " + sentences if found else "")
+    return "\n\n".join(part for part in parts if part)
+
+
+def doc_rules() -> str:
+    return "\n\n".join(part for part in (section(DOC_GUIDELINES, heading) for heading in DOC_SECTIONS) if part)
+
+
+def listing(found: list[tuple[str, int, str]]) -> str:
+    lines = [f"{name}:{number}: {line}" for name, number, line in found[:LIMIT]]
+    if len(found) > LIMIT:
+        lines.append(f"... and {len(found) - LIMIT} more lines")
+    return "\n".join(lines)
+
+
+def report(found: list[tuple[str, int, str]]) -> str:
+    parts = ["This request added comments or docstrings:", listing(found), REQUEST + QUIET, rules()]
+    return "\n\n".join(part for part in parts if part)
+
+
+def doc_report(found: list[tuple[str, int, str]]) -> str:
+    parts = ["This request added documentation:", listing(found), DOC_REQUEST + QUIET, doc_rules()]
+    return "\n\n".join(part for part in parts if part)
+
+
+def message_report(written: list[tuple[str, str]]) -> str:
+    listing = [f"{name}:\n{text}" for name, text in written[:LIMIT]]
+    parts = ["This request wrote commit messages:", *listing, MESSAGE_REQUEST + QUIET, message_rules()]
+    return "\n\n".join(part for part in parts if part)
+
+
+def repository(directory: Path) -> Path | None:
+    for command in (["git", "rev-parse", "--show-toplevel"], ["jj", "root", "--ignore-working-copy"]):
+        output = capture(command, directory)
+        if output and output.strip():
+            return Path(output.strip())
+    return None
+
+
+def has_own_hook(root: Path) -> bool:
+    """Return whether Claude Code runs the project's own copy of this hook, as in tine and systemd."""
+    if "CLAUDE_PROJECT_DIR" not in os.environ:
+        return False
+    try:
+        return "comment_hook" in (root / ".claude/settings.json").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def record(root: Path, own_hook: bool) -> dict[str, object]:
+    head = (capture(["git", "rev-parse", "--verify", "HEAD"], root) or "").strip() or None
+    files = {}
+    for name in changed(root, head):
+        lines = read(root, name)
+        if lines is not None:
+            files[name] = sorted({digest(line) for _, line in prose(Path(name), lines)})
+    return {
+        "root": str(root),
+        "head": head,
+        "files": files,
+        "own_hook": own_hook,
+        "messages": sorted({digest(text) for _, text in messages(root)}),
+    }
+
+
+def compare(known: dict[str, object]) -> list[str]:
+    root = Path(known["root"])
+    head = known["head"]
+    files = known["files"]
+    names = changed(root, head)
+    before = committed(root, head, [name for name in names if name not in files]) if head else {}
+    found: list[tuple[str, int, str]] = []
+    documented: list[tuple[str, int, str]] = []
+    for name in names:
+        lines = read(root, name)
+        if lines is None:
+            continue
+        if name in files:
+            old = set(files[name])
+        else:
+            old = {digest(line) for _, line in prose(Path(name), before.get(name, []))}
+        new = [(name, number, line) for number, line in prose(Path(name), lines) if digest(line) not in old]
+        if marker(Path(name)) in DOC_KINDS:
+            documented += new
+        else:
+            found += new
+
+    texts = set(known["messages"])
+    written = [(name, text) for name, text in messages(root) if digest(text) not in texts]
+    # The project's own hook reports comments and commit messages, but not documentation.
+    if known.get("own_hook"):
+        found = written = []
+    reports = [report(found)] if found else []
+    reports += [doc_report(documented)] if documented else []
+    reports += [message_report(written)] if written else []
+    return reports
+
+
+def handle(call: object, directory: Path) -> dict[str, str] | None:
+    """Return the output of the hook, or None if the hook has nothing to say."""
+    if not isinstance(call, dict):
+        return None
+    session = call.get("session_id")
+    event = call.get("hook_event_name")
+    if not isinstance(session, str) or not SESSION.fullmatch(session):
+        return None
+    state = directory / f"{session}.json"
+
+    if event == "UserPromptSubmit":
+        # The result of a background task arrives as a prompt in the middle of a request.
+        prompt = call.get("prompt")
+        if isinstance(prompt, str) and prompt.lstrip().startswith(NOTIFICATION):
+            return None
+        # An interrupted request never reaches `Stop` and leaves its state behind. Keep that state, so
+        # that the next `Stop` also reports the comments of the interrupted request.
+        if state.exists():
+            return None
+        cwd = call.get("cwd")
+        root = repository(Path(cwd if isinstance(cwd, str) else os.getcwd()))
+        if root is None:
+            return None
+        directory.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps(record(root, has_own_hook(root))), encoding="utf-8")
+        return None
+    if event != "Stop":
+        return None
+
+    try:
+        recorded = state.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    # The agent rewrites comments after a report, and these rewrites would be reported as new comments
+    # forever. Without the state, the next `Stop` of this request reports nothing.
+    state.unlink(missing_ok=True)
+    try:
+        reports = compare(json.loads(recorded))
+    except (ValueError, TypeError, KeyError):
+        return None
+    return {"decision": "block", "reason": "\n\n".join(reports)} if reports else None
+
+
+def main() -> None:
+    try:
+        call = json.load(sys.stdin)
+    except ValueError:
+        return
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or "/var/tmp")
+    output = handle(call, runtime / "agent-comment-hook")
+    if output:
+        json.dump(output, sys.stdout)
+
+
+if __name__ == "__main__":
+    main()

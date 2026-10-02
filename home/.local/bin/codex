@@ -1,7 +1,7 @@
 #!/usr/bin/env -S mise tool-stub
 
 tool = "codex"
-version = "0.144.4"
+version = "0.159.1"
 bin = "codex"
 
 [lock]
@@ -9,17 +9,17 @@ bin = "codex"
 [lock.platforms]
 
 [lock.platforms.linux-arm64]
-url = "https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-package-aarch64-unknown-linux-musl.tar.gz"
-checksum = "sha256:b1bc561a5bf74f9c5767c698275ae8043cee2ce45341098048b0b0b8b4e2cfc5"
+url = "https://github.com/openai/codex/releases/download/rust-v0.159.1/codex-package-aarch64-unknown-linux-musl.tar.gz"
+checksum = "sha256:63b3b5a4e76b4174d651d2d363ac028fdb4961ba47eca9946da3c35267999aec"
 
 [lock.platforms.linux-arm64-musl]
-url = "https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-package-aarch64-unknown-linux-musl.tar.gz"
-checksum = "sha256:b1bc561a5bf74f9c5767c698275ae8043cee2ce45341098048b0b0b8b4e2cfc5"
+url = "https://github.com/openai/codex/releases/download/rust-v0.159.1/codex-package-aarch64-unknown-linux-musl.tar.gz"
+checksum = "sha256:63b3b5a4e76b4174d651d2d363ac028fdb4961ba47eca9946da3c35267999aec"
 
 [lock.platforms.linux-x64]
-url = "https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-package-x86_64-unknown-linux-musl.tar.gz"
-checksum = "sha256:d0a7bdb2ca821c9bb5f4cc2fb11a4ed96025db63b20d1bddf1e632361a108220"
+url = "https://github.com/openai/codex/releases/download/rust-v0.159.1/codex-package-x86_64-unknown-linux-musl.tar.gz"
+checksum = "sha256:9a2dff8e1eb9bad83f52edb6f91175efeb5c68a316f880c95d7770f87a34fc5c"
 
 [lock.platforms.linux-x64-musl]
-url = "https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-package-x86_64-unknown-linux-musl.tar.gz"
-checksum = "sha256:d0a7bdb2ca821c9bb5f4cc2fb11a4ed96025db63b20d1bddf1e632361a108220"
+url = "https://github.com/openai/codex/releases/download/rust-v0.159.1/codex-package-x86_64-unknown-linux-musl.tar.gz"
+checksum = "sha256:9a2dff8e1eb9bad83f52edb6f91175efeb5c68a316f880c95d7770f87a34fc5c"

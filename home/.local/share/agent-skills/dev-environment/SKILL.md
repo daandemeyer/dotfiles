@@ -1,6 +1,6 @@
 ---
 name: dev-environment
-description: "Use when a project needs a toolchain to build, test or run: installing language runtimes, compilers, build tools or dependencies, or deciding how a project is built locally. Also use the moment a build, test or run command fails over a missing tool (linker `cc` not found, command not found, missing header or library), before working around it by hand."
+description: "Use when a project needs a toolchain to build, test or run: installing language runtimes, compilers, build tools or dependencies, setting up a tine box, or deciding how a project is built locally. Also use the moment a build, test or run command fails over a missing tool (linker `cc` not found, command not found, missing header or library), before working around it by hand."
 ---
 
 # Development environments
@@ -37,9 +37,48 @@ config that shadows the project's. In the root it updates an existing
 
 ## C and C++
 
-Stop and ask the user how the project should be built. Do not install a system
-toolchain, pick a package manager, or reach for the zig wrappers on your own.
-Report what the project needs and let the user choose.
+Build, test and run inside a tine box. Never install a system toolchain or
+libraries on the host, and never reach for the zig wrappers.
+
+If the project root has no `BUCK` file, set one up:
+
+1. Run `tine init` in the project root.
+2. Write a `BUCK` file in the project root that declares a box with the
+   packages the project needs, and a `box` alias for it. `tine box` runs
+   `//:box`. Package names are Arch Linux package names:
+
+       """Arch Linux development environment for <project>."""
+
+       load("@tine//box:defs.bzl", "box")
+
+       box.new(
+           name = "<project>.box",
+           packages = [
+               "base",
+               "base-devel",
+               "iptables",
+               "meson",
+               "openssl",
+           ],
+           release = "tine//catalog:arch.rolling.release",
+       )
+
+       command_alias(
+           name = "box",
+           exe = ":<project>.box",
+       )
+
+   Take the package list from the project's build files (`meson.build`,
+   `CMakeLists.txt`, `configure.ac`) and its CI configuration.
+
+Then run every build, test and run command through the box:
+
+    tine box -- meson setup build
+    tine box -- meson test -C build
+
+When a tool or library is missing, add its package to `packages` in `BUCK`.
+Keep the `BUCK` file and the files `tine init` writes out of commits unless the
+user asks otherwise.
 
 ## Rust
 
@@ -55,9 +94,9 @@ actually visible:
 
 No hits: use the zig wrappers, below.
 
-Any hits: stop and ask the user, exactly as for C and C++. A `-sys` crate that
-vendors and builds its own source needs no system library, but confirm that
-rather than assuming it.
+Any hits: use a tine box, exactly as for C and C++. A `-sys` crate that vendors
+and builds its own source needs no system library, but confirm that rather than
+assuming it.
 
 ### zig wrappers
 
