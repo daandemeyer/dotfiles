@@ -1,0 +1,7 @@
+# Full debug info takes up most of the disk space in target/. Set
+# CARGO_PROFILE_DEV_DEBUG=true to build with full debug info when debugging.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

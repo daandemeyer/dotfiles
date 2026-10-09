@@ -23,6 +23,7 @@ post-dotfiles = "{{env.HOME}}/Projects/dotfiles/hooks/update-desktop-database"
 "~/.bash_logout" = { mode = "symlink" }
 "~/.bash_profile" = { mode = "symlink" }
 "~/.bashrc" = { mode = "symlink" }
+"~/.cargo/config.toml" = { mode = "symlink" }
 "~/.gitconfig" = { mode = "symlink" }
 
 "~/.claude/CLAUDE.md" = { mode = "symlink" }
