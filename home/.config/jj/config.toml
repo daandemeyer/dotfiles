@@ -7,18 +7,12 @@ email = "daan@amutable.com"
 [git]
 push = "fork"
 fetch = ["origin"]
-# `jj git push` prints a warning and skips a bookmark that points to a private commit.
-# `jj push-megamerge` passes `--allow-private` to push the megamerge commit anyway.
-# megamerge() can also match merge commits on trunk. `& mutable()` removes trunk merge
-# commits from the private set. If a trunk merge commit were private, jj would refuse to
-# push any branch that contains it.
-private-commits = "megamerge() & mutable()"
 
 [revsets]
 log-graph-prioritize = 'coalesce(megamerge(), trunk())'
-# The `megamerge` bookmark is not tracked on the fork remote. Without `~ megamerge()`,
-# every `jj git push` prints a warning that it refuses to create `megamerge@fork`.
-# jj 0.45.1 and older releases ignore `revsets.git-push`.
+# Only `jj push-megamerge` pushes the megamerge commit. Without `~ megamerge()`, a plain
+# `jj git push` moves `main@fork` after every rewrite of the megamerge. It also warns that
+# it refuses to create `megamerge@fork`, because the `megamerge` bookmark is not tracked.
 git-push = 'remote_bookmarks(remote=exact:remote)..@ ~ megamerge()'
 
 [revset-aliases]
@@ -57,7 +51,7 @@ restack = ["rebase", "--onto", "trunk()", "--source", "roots(trunk()..) & stack(
 push-megamerge = ["util", "exec", "--", "bash", "-c", '''
 set -euo pipefail
 jj bookmark set main --allow-backwards --revision "megamerge()"
-jj git push --remote fork --bookmark main --allow-private
+jj git push --remote fork --bookmark main
 ''']
 
 pr = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/pr.py" "$@"', "--"]
