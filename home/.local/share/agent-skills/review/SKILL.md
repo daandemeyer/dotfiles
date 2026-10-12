@@ -236,6 +236,12 @@ Write the report to `/var/tmp/review-<target>.md` and show it to the user.
 Start it with the reviewed revisions (commit IDs of base and head), which
 anchor the next re-review.
 
+The reply in the conversation must describe every architecture and minimalism
+finding in the same detail as the bugs: the code in question, the concrete
+alternative and what changes as a result. Never shorten them to a count, a
+one-line mention or a pointer to the report file. The user reads the reply
+first, and a finding that only appears in the file is easy to miss.
+
 List findings by severity, highest first, and mark the ones that must be fixed
 before merging as blockers. Give each finding a short identifier that stays
 the same across rounds, such as B1 for the first blocker:
