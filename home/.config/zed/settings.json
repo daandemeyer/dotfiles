@@ -85,6 +85,9 @@
     "Python": {
       "language_servers": ["ty", "!basedpyright", "..."]
     },
+    "Rust": {
+      "enable_language_server": false
+    },
     "Starlark": {
       "language_servers": ["buck2-lsp", "!starpls", "!tilt"]
     }
