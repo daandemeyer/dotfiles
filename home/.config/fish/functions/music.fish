@@ -10,7 +10,8 @@ function music --description 'Shuffle live sets from favorite artists'
                 "james grant" \
 		"cri" \
 		"my friend" \
-                "simon doty" 
+                "simon doty" \
+                "nicky elisabeth"
     
     set -l urls
     
