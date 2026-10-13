@@ -75,6 +75,15 @@ prefix when one is established.
 
 - The subject is `area: what changed`, imperative, under 60 characters. The
   area is the component the commit touches, for example `journal:` or `nspawn:`.
+  The imperative is for the subject only.
+- In the body, describe the fix in first person plural: "Let's ..." or
+  "we ...". Never write a bare imperative sentence in the body. Use
+  contractions (can't, don't, isn't) the way you would say them.
+
+  Bad: Probe whether a file can be chowned to another ID, like the existing
+  mknod probe, and skip these tests when it cannot.
+  Good: Let's probe whether a file can be chowned to another ID, like the
+  existing mknod probe, and skip these tests when we can't do so.
 - Add a body except for genuinely trivial changes, wrapped at 80 columns.
   Match its length to the change: one short paragraph for a simple change,
   more for a subtle bug. Each paragraph holds one idea.
@@ -111,8 +120,8 @@ A whole commit body, in full:
 
 ```
 The daemon keeps a stale mount digest, so a second build reuses a namespace
-that no longer matches. Compare the digest on startup and kill the daemon
-when it differs.
+that no longer matches. Let's compare the digest on startup and kill the
+daemon when it differs.
 ```
 
 ## Pull request descriptions
