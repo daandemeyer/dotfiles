@@ -1,20 +1,20 @@
 #!/usr/bin/env -S mise tool-stub
 
-version = "2.1.220"
+version = "2.1.299"
 bin = "claude"
 
 [platforms.linux-x64]
-url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.220/linux-x64/claude"
-checksum = "sha256:674f61f20ff306f3100cf9200e4c36c4b70278b5bef2884549819b942a89c863"
+url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.299/linux-x64/claude"
+checksum = "sha256:2d894a4b1bfaaa9aab72aeff7803e3c73bc2510f279a171f6b8f59f72d17d077"
 
 [platforms.linux-x64-musl]
-url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.220/linux-x64-musl/claude"
-checksum = "sha256:f1c20514a3571cdf9982e25c490042d740ed7cfed3f00c64ba92dc7ec47c3c5b"
+url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.299/linux-x64-musl/claude"
+checksum = "sha256:af9b922a7a018c69eb6de3a9d401b32b6cdfba3c01bf75a5edb6b477ef17f117"
 
 [platforms.linux-arm64]
-url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.220/linux-arm64/claude"
-checksum = "sha256:159e4a51d796f3bf14677577100f7efb845611b1ceaf0c30cbd8d4650d942185"
+url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.299/linux-arm64/claude"
+checksum = "sha256:4cd5ab006b49dc12a247fed4dbc42a925ad1aea1e711d9aa24587d285ee87c2f"
 
 [platforms.linux-arm64-musl]
-url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.220/linux-arm64-musl/claude"
-checksum = "sha256:5eb2697a1500c1b8736e53fd696392196dc6758cf1d470c64d8d2a2fd1629eeb"
+url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.299/linux-arm64-musl/claude"
+checksum = "sha256:3e90af8f81cf7db932bbda3ab2ba57facb1e2a19a43f911b70536bf627472757"
