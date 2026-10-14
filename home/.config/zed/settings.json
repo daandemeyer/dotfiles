@@ -95,6 +95,9 @@
 
   "agent_servers": {
     "claude-acp": {
+      "env": {
+        "CLAUDE_CODE_EXECUTABLE": "/home/daandemeyer/.local/bin/claude"
+      },
       "default_config_options": {
         "model": "opus",
         "effort": "high",
