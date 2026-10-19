@@ -75,6 +75,11 @@ for c in $(jj log --revisions "trunk()..(${1:-@})" --reversed --no-graph --templ
 done
 ''', "--"]
 
+# `jj ws-add <name> [-r <rev>]` to create a workspace from a btrfs snapshot of the default
+# workspace, and `jj ws-remove <name>` to delete it again.
+ws-add = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" add "$@"', "--"]
+ws-remove = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" remove "$@"', "--"]
+
 [ui]
 default-command = "log"
 editor = "systemd-run --user --pipe --wait --collect --quiet zed --wait"
