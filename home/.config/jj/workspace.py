@@ -13,6 +13,7 @@ DEFAULT = "default"
 # btrfs gives the root directory of every subvolume inode number 256.
 SUBVOLUME_ROOT_INODE = 256
 METADATA = (".jj", ".git")
+WORKSPACE_ROOTS = 'self.name() ++ "\\t" ++ self.root() ++ "\\n"'
 
 
 def run(*args: str | Path, cwd: Path | None = None) -> str:
@@ -34,12 +35,34 @@ def is_subvolume(path: Path) -> bool:
     return filesystem == "btrfs" and path.stat().st_ino == SUBVOLUME_ROOT_INODE
 
 
-def workspace_root(name: str | None = None) -> Path:
-    return Path(run("jj", "workspace", "root", *(["--name", name] if name else [])).strip()).resolve()
+def workspace_root(name: str | None = None, repository: Path | None = None) -> Path:
+    command = ["jj", *(["-R", repository] if repository else []), "workspace", "root"]
+    return Path(run(*command, *(["--name", name] if name else [])).strip()).resolve()
+
+
+def workspace_name(path: Path) -> str:
+    for line in run("jj", "-R", path, "workspace", "list", "-T", WORKSPACE_ROOTS).splitlines():
+        name, _, root = line.partition("\t")
+        if root and Path(root).resolve() == path:
+            return name
+    fail(f"{path} is not the root of a jj workspace")
 
 
 def snapshot_directory(root: Path, name: str) -> Path:
     return root.parent / "worktrees" / root.name / name
+
+
+def delete_subvolume(path: Path) -> None:
+    # An unprivileged user can only run `btrfs subvolume delete` on a filesystem mounted with
+    # user_subvol_rm_allowed. On other mounts, the command fails with EPERM. shutil.rmtree()
+    # still works on those mounts, because rmdir() can remove an empty subvolume.
+    result = subprocess.run(
+        ["btrfs", "subvolume", "delete", str(path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        shutil.rmtree(path)
 
 
 def remove_entry(path: Path) -> None:
@@ -119,14 +142,16 @@ def add(args: argparse.Namespace) -> None:
             f"    mv {root} {root}.old && mv {root}.new {root}\n"
             f"    rm -rf {root}.old"
         )
-    dest = snapshot_directory(root, args.name)
+    dest = args.path.absolute()
     if dest.exists() or dest.is_symlink():
         fail(f"{dest} already exists")
     dest.parent.mkdir(parents=True, exist_ok=True)
+    dest = dest.resolve()
+    name = dest.name
 
     revisions = [word for revision in args.revision for word in ("--revision", revision)]
     colocate = ["--colocate"] if (root / ".git").is_dir() else []
-    run("jj", "-R", root, "workspace", "add", "--name", args.name, *colocate, *revisions, dest)
+    run("jj", "-R", root, "workspace", "add", "--name", name, *colocate, *revisions, dest)
     metadata = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}."))
     try:
         graft(root, dest, metadata)
@@ -135,10 +160,10 @@ def add(args: argparse.Namespace) -> None:
         run("jj", "-R", dest, "restore")
     except BaseException:
         if dest.exists() and is_subvolume(dest):
-            run("btrfs", "subvolume", "delete", dest)
+            delete_subvolume(dest)
         elif dest.exists():
             shutil.rmtree(dest)
-        run("jj", "-R", root, "workspace", "forget", args.name)
+        run("jj", "-R", root, "workspace", "forget", name)
         if colocate:
             # `jj workspace forget` only unregisters the Git worktree while the .git file of the
             # workspace exists. The workspace directory is gone at this point.
@@ -152,23 +177,25 @@ def add(args: argparse.Namespace) -> None:
 
 
 def remove(args: argparse.Namespace) -> None:
-    if args.name == DEFAULT:
+    path = args.path.resolve()
+    name = workspace_name(path)
+    if name == DEFAULT:
         fail("refusing to remove the default workspace")
-    path = workspace_root(args.name)
-    if workspace_root() == path:
+    if Path.cwd().resolve().is_relative_to(path):
         fail("cannot remove the current workspace; run this from another workspace")
     if not is_subvolume(path):
-        fail(f"{path} is not a btrfs subvolume; remove it with `jj workspace remove {args.name}`")
+        fail(f"{path} is not a btrfs subvolume; remove it with `jj workspace remove {name}`")
+    root = workspace_root(DEFAULT, path)
 
     # `jj util snapshot` records uncommitted changes in the working-copy commit. The changes stay
     # in the repository after the files are deleted.
     run("jj", "-R", path, "util", "snapshot")
     # `jj workspace forget` only unregisters the Git worktree while the .git file of the workspace
     # exists, so it has to run before the subvolume is deleted.
-    run("jj", "workspace", "forget", args.name)
-    run("btrfs", "subvolume", "delete", path)
+    run("jj", "-R", root, "workspace", "forget", name)
+    delete_subvolume(path)
 
-    if path == snapshot_directory(workspace_root(DEFAULT), args.name):
+    if path == snapshot_directory(root, name):
         for parent in (path.parent, path.parent.parent):
             try:
                 parent.rmdir()
@@ -180,13 +207,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     add_parser = commands.add_parser("add", help="create a workspace from a snapshot of the default workspace")
-    add_parser.add_argument("name")
-    add_parser.add_argument(
-        "-r", "--revision", action="append", default=[], help="parent of the new working-copy commit"
-    )
+    add_parser.add_argument("path", type=Path)
+    add_parser.add_argument("revision", nargs="*", help="parents of the new working-copy commit")
     add_parser.set_defaults(func=add)
     remove_parser = commands.add_parser("remove", help="delete a snapshot workspace and forget it")
-    remove_parser.add_argument("name")
+    remove_parser.add_argument("path", type=Path)
     remove_parser.set_defaults(func=remove)
     args = parser.parse_args()
     try:

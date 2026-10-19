@@ -71,10 +71,10 @@ than the default one, skip this step, as described under Workspaces.
 A workspace is a second working copy of the same repository, so that several
 agents can work at the same time. Create one only when the user asks for it:
 
-    jj ws-add <name> [-r <rev>]
+    jj ws-add ../worktrees/<project>/<name> [<rev>]
 
-It creates the workspace in `../worktrees/<project>/<name>`, next to the
-default workspace, and prints its path. If it fails because the default
+`<project>` is the directory name of the default workspace. The command names
+the workspace `<name>` and prints its path. If it fails because the default
 workspace is not a btrfs subvolume, show the user the commands it printed and
 stop. Never convert the checkout yourself.
 
@@ -107,7 +107,7 @@ prints a different path than `jj workspace root --name default`. In that case:
   change IDs.
 - If jj reports that the working copy is stale, another workspace rewrote its
   commit. Run `jj workspace update-stale`.
-- Remove a workspace only when the user asks, with `jj ws-remove <name>` from a
+- Remove a workspace only when the user asks, with `jj ws-remove <path>` from a
   different workspace. It commits uncommitted changes in the workspace before
   it deletes the directory.
 
