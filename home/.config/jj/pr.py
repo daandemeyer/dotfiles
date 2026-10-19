@@ -134,7 +134,11 @@ def main() -> None:
         create = ["gh", "pr", "create", "--fill", "--head", f"{owner}:{branch}"]
         if base:
             create += ["--base", base]
-        subprocess.run(create, check=True)
+        result = subprocess.run(create, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            sys.stderr.write(result.stderr)
+            sys.exit(result.returncode)
+        print(f"{result.stdout.strip()}: created pull request")
 
 
 if __name__ == "__main__":
