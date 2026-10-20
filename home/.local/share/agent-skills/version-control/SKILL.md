@@ -82,6 +82,8 @@ The workspace is a btrfs snapshot of the default workspace. It contains every
 ignored file of the default workspace: `buck-out`, build directories and the
 untracked tine files. Builds in it reuse those outputs and only rebuild what
 changed, so never delete them or set up new build directories next to them.
+The user updates the build directories of the default workspace with
+`jj seed`. Never run it yourself.
 `jj ws-add` reconfigures meson build directories for the new path. If it warns
 that it removed a `build.ninja`, run `meson setup --reconfigure <dir>` (through
 `tine box --` in a tine project) before building.

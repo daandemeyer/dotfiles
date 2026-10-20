@@ -2,6 +2,8 @@
 """Create and remove jj workspaces as btrfs snapshots of the default workspace."""
 
 import argparse
+import fcntl
+import json
 import os
 import shutil
 import subprocess
@@ -9,9 +11,12 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import NoReturn
+from typing import IO, NoReturn
 
 DEFAULT = "default"
+# New workspaces start on the megamerge, so the build directories of the default workspace are
+# built from the megamerge. A repository without a megamerge builds trunk().
+SEED_REVSET = "coalesce(megamerge(), trunk())"
 # btrfs gives the root directory of every subvolume inode number 256.
 SUBVOLUME_ROOT_INODE = 256
 METADATA = (".jj", ".git")
@@ -125,6 +130,19 @@ def processes_in(path: Path) -> list[str]:
     return processes
 
 
+def lock_seed(root: Path, operation: int) -> IO[str]:
+    # `jj ws-add` copies the build directories of the default workspace into the new workspace.
+    # While `jj seed` runs its build commands, the build directories of the default workspace
+    # contain partially written outputs.
+    lock = (root / ".jj" / "seed.lock").open("a")
+    try:
+        fcntl.flock(lock, operation | fcntl.LOCK_NB)
+    except BlockingIOError:
+        warn("waiting for `jj seed` to finish")
+        fcntl.flock(lock, operation)
+    return lock
+
+
 def remove_entry(path: Path) -> None:
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
@@ -202,6 +220,7 @@ def add(args: argparse.Namespace) -> None:
             f"    mv {root} {root}.old && mv {root}.new {root}\n"
             f"    rm -rf {root}.old"
         )
+    lock = lock_seed(root, fcntl.LOCK_SH)
     dest = args.path.absolute()
     if dest.exists() or dest.is_symlink():
         fail(f"{dest} already exists")
@@ -234,6 +253,7 @@ def add(args: argparse.Namespace) -> None:
         raise
     finally:
         shutil.rmtree(metadata, ignore_errors=True)
+    lock.close()
 
     relocate_meson_build_dirs(root, dest)
     print(dest)
@@ -285,6 +305,41 @@ def remove(args: argparse.Namespace) -> None:
             parent = parent.parent
 
 
+def seed(args: argparse.Namespace) -> None:
+    root = workspace_root(DEFAULT)
+    if workspace_root() != root:
+        fail("run `jj seed` from the default workspace")
+    result = subprocess.run(
+        ["jj", "config", "list", "seed.commands", "-T", "json(value)"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    commands = json.loads(result.stdout or "null")
+    if not commands:
+        fail("seed.commands is not set for this repository")
+    if not isinstance(commands, list) or not all(
+        isinstance(command, list) and command and all(isinstance(word, str) for word in command)
+        for command in commands
+    ):
+        fail("seed.commands must be a list of commands, each a list of strings")
+    # `jj new` moves the default workspace onto the megamerge. The changes of the old working-copy
+    # commit stay in that commit and aren't part of the seed build.
+    if run("jj", "log", "--no-graph", "-r", "@", "-T", 'if(empty && !description, "clean")') != "clean":
+        fail("the working-copy commit of the default workspace isn't empty; move its changes first")
+
+    with lock_seed(root, fcntl.LOCK_EX):
+        subprocess.run(["jj", "git", "fetch"], check=True)
+        subprocess.run(["jj", "restack"], check=True)
+        subprocess.run(["jj", "new", SEED_REVSET], check=True)
+        for command in commands:
+            print(f"jj-workspace: running {' '.join(command)}", file=sys.stderr)
+            result = subprocess.run(command, cwd=root)
+            if result.returncode != 0:
+                sys.exit(result.returncode)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -295,6 +350,10 @@ def main() -> None:
     remove_parser = commands.add_parser("remove", help="delete a snapshot workspace and forget it")
     remove_parser.add_argument("path", type=Path)
     remove_parser.set_defaults(func=remove)
+    seed_parser = commands.add_parser(
+        "seed", help="update the default workspace and build it for new workspaces to copy"
+    )
+    seed_parser.set_defaults(func=seed)
     args = parser.parse_args()
     try:
         args.func(args)

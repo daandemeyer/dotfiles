@@ -82,6 +82,9 @@ done
 ws-add = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" add "$@"', "--"]
 ws-remove = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" remove "$@"', "--"]
 
+# `jj seed` to rebuild the build directories that `jj ws-add` copies into new workspaces.
+seed = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" seed "$@"', "--"]
+
 [ui]
 default-command = "log"
 editor = "systemd-run --user --pipe --wait --collect --quiet zed --wait"
@@ -102,3 +105,8 @@ commit_trailers = 'format_signed_off_by_trailer(self)'
 --when.commands = ["log", "evolog", "operation log"]
 [--scope.ui]
 pager = { command = ["less", "-FRXK"], env = { LESSCHARSET = "utf-8" } }
+
+[[--scope]]
+--when.repositories = ["~/Projects/systemd"]
+[--scope.seed]
+commands = [["tine", "box", "--", "meson", "compile", "-C", "build"]]
