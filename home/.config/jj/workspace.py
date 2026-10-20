@@ -48,8 +48,8 @@ def workspace_name(path: Path) -> str:
     fail(f"{path} is not the root of a jj workspace")
 
 
-def snapshot_directory(root: Path, name: str) -> Path:
-    return root.parent / "worktrees" / root.name / name
+def worktrees_directory(root: Path) -> Path:
+    return root.parent / "worktrees"
 
 
 def delete_subvolume(path: Path) -> None:
@@ -147,7 +147,10 @@ def add(args: argparse.Namespace) -> None:
         fail(f"{dest} already exists")
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest = dest.resolve()
-    name = dest.name
+    # Zed creates worktrees at ../worktrees/<project>/<name>/<project>, where the last path component
+    # is always the project name. jj workspace names must be unique, so the workspace is named after
+    # the <name> component.
+    name = dest.parent.name if dest.name == root.name else dest.name
 
     revisions = [word for revision in args.revision for word in ("--revision", revision)]
     colocate = ["--colocate"] if (root / ".git").is_dir() else []
@@ -195,12 +198,14 @@ def remove(args: argparse.Namespace) -> None:
     run("jj", "-R", root, "workspace", "forget", name)
     delete_subvolume(path)
 
-    if path == snapshot_directory(root, name):
-        for parent in (path.parent, path.parent.parent):
+    if path.is_relative_to(worktrees_directory(root)):
+        parent = path.parent
+        while parent.is_relative_to(worktrees_directory(root)):
             try:
                 parent.rmdir()
             except OSError:
                 break
+            parent = parent.parent
 
 
 def main() -> None:
