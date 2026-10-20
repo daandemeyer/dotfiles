@@ -1,6 +1,6 @@
 ---
 name: version-control
-description: "Use before changing files in a repository and before running any version-control command: committing, amending, rebasing, writing commit messages or pull request descriptions, landing edits into existing commits, or creating or working in a jj workspace."
+description: "Use before changing files in a repository and before running any version-control command: committing, amending, rebasing, writing commit messages or pull request descriptions, landing edits into existing commits, or working in a jj workspace."
 ---
 
 # Version control
@@ -68,29 +68,10 @@ than the default one, skip this step, as described under Workspaces.
 
 ### Workspaces
 
-A workspace is a second working copy of the same repository, so that several
-agents can work at the same time. Create one only when the user asks for it:
-
-    jj ws-add ../worktrees/<project>/<name> [<rev>]
-
-`<project>` is the directory name of the default workspace. The command names
-the workspace `<name>` and prints its path. If it fails because the default
-workspace is not a btrfs subvolume, show the user the commands it printed and
-stop. Never convert the checkout yourself.
-
-The workspace is a btrfs snapshot of the default workspace. It contains every
-ignored file of the default workspace: `buck-out`, build directories and the
-untracked tine files. Builds in it reuse those outputs and only rebuild what
-changed, so never delete them or set up new build directories next to them.
-The user updates the build directories of the default workspace with
-`jj seed`. Never run it yourself.
-`jj ws-add` reconfigures meson build directories for the new path. If it warns
-that it removed a `build.ninja`, run `meson setup --reconfigure <dir>` (through
-`tine box --` in a tine project) before building.
-
-The working-copy commit of a new workspace is empty. It starts on the parents
-of the default workspace's working-copy commit, or on `<rev>`. Uncommitted
-changes of the default workspace are not in it.
+Zed creates a jj workspace for an agent thread that runs in its own worktree,
+so that several agents can work at the same time. Zed also removes the
+workspace when the user archives the thread. Never create or remove a
+workspace yourself.
 
 You are in a workspace other than the default one when `jj workspace root`
 prints a different path than `jj workspace root --name default`. In that case:
@@ -105,13 +86,19 @@ prints a different path than `jj workspace root --name default`. In that case:
   workspaces. Two workspaces that rewrite the same commit at the same time
   create divergent commits. So pass `jj absorb` an `--into` revset that names
   only commits you created, never squash into a commit you did not create, and
-  never run `jj stack` or `jj restack`. Leave the series on top of the megamerge and give the user its
-  change IDs.
+  never run `jj stack` or `jj restack`. Leave the series on top of the
+  megamerge and give the user its change IDs.
 - If jj reports that the working copy is stale, another workspace rewrote its
   commit. Run `jj workspace update-stale`.
-- Remove a workspace only when the user asks, with `jj ws-remove <path>` from a
-  different workspace. It commits uncommitted changes in the workspace before
-  it deletes the directory.
+
+The workspace is a btrfs snapshot of the default workspace. It contains every
+ignored file of the default workspace: `buck-out`, build directories and the
+untracked tine files. Builds in it reuse those outputs and only rebuild what
+changed, so never delete them or set up new build directories next to them.
+The user updates the build directories of the default workspace with
+`jj seed`. Never run it yourself. If a meson build directory has no
+`build.ninja`, run `meson setup --reconfigure <dir>` (through `tine box --` in
+a tine project) before building.
 
 ## Commit messages
 
