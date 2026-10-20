@@ -13,7 +13,12 @@ DEFAULT = "default"
 # btrfs gives the root directory of every subvolume inode number 256.
 SUBVOLUME_ROOT_INODE = 256
 METADATA = (".jj", ".git")
+# Zed saves the files of a worktree in a commit under this namespace before it removes the
+# worktree. Restoring the archived thread writes the files from that commit into a new worktree.
+ZED_ARCHIVE_REFS = "refs/archived-worktrees/"
 WORKSPACE_ROOTS = 'self.name() ++ "\\t" ++ self.root() ++ "\\n"'
+# Zed doesn't save the description of a commit, so a described commit is never abandoned.
+UNDESCRIBED_CHANGES = 'if(!empty && !description, commit_id)'
 
 
 def run(*args: str | Path, cwd: Path | None = None) -> str:
@@ -63,6 +68,14 @@ def delete_subvolume(path: Path) -> None:
     )
     if result.returncode != 0:
         shutil.rmtree(path)
+
+
+def archived_by_zed(root: Path, commit: str) -> bool:
+    if not (root / ".git").is_dir():
+        return False
+    tree = run("git", "-C", root, "rev-parse", f"{commit}^{{tree}}").strip()
+    archived = run("git", "-C", root, "for-each-ref", "--format=%(tree)", ZED_ARCHIVE_REFS)
+    return tree in archived.split()
 
 
 def remove_entry(path: Path) -> None:
@@ -193,10 +206,16 @@ def remove(args: argparse.Namespace) -> None:
     # `jj util snapshot` records uncommitted changes in the working-copy commit. The changes stay
     # in the repository after the files are deleted.
     run("jj", "-R", path, "util", "snapshot")
+    commit = run("jj", "-R", path, "log", "--no-graph", "-r", "@", "-T", UNDESCRIBED_CHANGES).strip()
     # `jj workspace forget` only unregisters the Git worktree while the .git file of the workspace
     # exists, so it has to run before the subvolume is deleted.
     run("jj", "-R", root, "workspace", "forget", name)
     delete_subvolume(path)
+    # A Zed archive commit with the same tree contains every change in the working-copy commit.
+    # Restoring the thread recreates the changes in a new working-copy commit. Keeping the old
+    # commit as well would leave a second copy of the changes in `jj log`.
+    if commit and archived_by_zed(root, commit):
+        run("jj", "-R", root, "abandon", commit)
 
     if path.is_relative_to(worktrees_directory(root)):
         parent = path.parent
