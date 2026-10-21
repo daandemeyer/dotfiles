@@ -87,7 +87,8 @@ prints a different path than `jj workspace root --name default`. In that case:
   create divergent commits. So pass `jj absorb` an `--into` revset that names
   only commits you created, never squash into a commit you did not create, and
   never run `jj stack` or `jj restack`. Leave the series on top of the
-  megamerge and give the user its change IDs.
+  megamerge and give the user its change IDs. The only exception is
+  `jj land`, described under "Syncing the stack".
 - If jj reports that the working copy is stale, another workspace rewrote its
   commit. Run `jj workspace update-stale`.
 
@@ -108,16 +109,21 @@ Sync the stack only when the user asks, from your own workspace:
 
 `jj sync` fetches and creates copies of the commits between `trunk()` and the
 megamerge on top of the new `trunk()`, and moves your working copy onto the
-copy of the megamerge. It lists the copies that have conflicts. The copies
-count as commits you created, and the other workspaces keep working on the
-original stack.
+copy of the megamerge. It prints the change ID of the copy of the megamerge
+and lists the copies that have conflicts. The copies count as commits you
+created, and the other workspaces keep working on the original stack. Until
+`jj land`, `megamerge()` still resolves to the original megamerge, so use the
+change ID that `jj sync` printed wherever this skill says `megamerge()`.
 
 Resolve each conflict on top of the conflicted copy: `jj new <copy>`, fix the
 files, then `jj squash`. Then return with `jj new <copy of the megamerge>` and
-build and test it. When it builds and the tests pass, run `jj land`. It moves
-the bookmarks and the commits of every other workspace onto the copies and
-abandons the original stack. If `jj land` reports that the stack changed after
-`jj sync`, run `jj sync --abort` and start over with `jj sync`.
+build and test it. When it builds and the tests pass, run `jj land`. It is the
+only command that rewrites commits you didn't create: it rebases the original
+stack onto the new `trunk()`, moves the content of the copies into it and
+abandons the copies. The commits of the other workspaces move along with the
+stack. If `jj land` reports that the stack changed after `jj sync`, run
+`jj sync --abort` and start over with `jj sync`. When `jj land` is done, tell
+the user to run `jj seed`.
 
 ## Commit messages
 
