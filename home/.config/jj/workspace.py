@@ -61,12 +61,12 @@ def is_subvolume(path: Path) -> bool:
 
 
 def workspace_root(name: str | None = None, repository: Path | None = None) -> Path:
-    command = ["jj", *(["-R", repository] if repository else []), "workspace", "root"]
+    command = ["jj", "--ignore-working-copy", *(["-R", repository] if repository else []), "workspace", "root"]
     return Path(run(*command, *(["--name", name] if name else [])).strip()).resolve()
 
 
 def workspace_name(path: Path) -> str:
-    for line in run("jj", "-R", path, "workspace", "list", "-T", WORKSPACE_ROOTS).splitlines():
+    for line in run("jj", "--ignore-working-copy", "-R", path, "workspace", "list", "-T", WORKSPACE_ROOTS).splitlines():
         name, _, root = line.partition("\t")
         if root and Path(root).resolve() == path:
             return name
@@ -291,6 +291,10 @@ def remove(args: argparse.Namespace) -> None:
         fail(f"{path} is not a btrfs subvolume; remove it with `jj workspace remove {name}`")
     root = workspace_root(DEFAULT, path)
 
+    # A rewrite in another workspace, like `jj land`, leaves the workspace stale, and `jj util snapshot`
+    # refuses to run in a stale workspace. `jj workspace update-stale` first records the changes in
+    # the stale working-copy commit and then checks out its rewritten version.
+    run("jj", "-R", path, *SNAPSHOT_EVERY_FILE, "workspace", "update-stale")
     # `jj util snapshot` records uncommitted changes in the working-copy commit. The changes stay
     # in the repository after the files are deleted.
     run("jj", "-R", path, *SNAPSHOT_EVERY_FILE, "util", "snapshot")
