@@ -16,6 +16,7 @@ from typing import IO, NoReturn
 DEFAULT = "default"
 # New workspaces start on the megamerge, so the build directories of the default workspace are
 # built from the megamerge. A repository without a megamerge builds trunk().
+PROGRESS_WIDTH = 30
 CLONE_USAGE = "jj clone <source> [<destination>] [<jj git clone option>...]"
 SEED_REVSET = "coalesce(megamerge(), trunk())"
 # btrfs gives the root directory of every subvolume inode number 256.
@@ -378,6 +379,52 @@ def clone(args: argparse.Namespace) -> None:
         sys.exit(result.returncode)
 
 
+def count_entries(path: Path) -> int:
+    count = 0
+    directories = [path]
+    while directories:
+        with os.scandir(directories.pop()) as entries:
+            for entry in entries:
+                count += 1
+                if entry.is_dir(follow_symlinks=False):
+                    directories.append(Path(entry.path))
+    return count
+
+
+def show_progress(label: str, done: int, total: int) -> None:
+    done = min(done, total)
+    fraction = done / total if total else 1
+    filled = int(fraction * PROGRESS_WIDTH)
+    bar = "#" * filled + "-" * (PROGRESS_WIDTH - filled)
+    print(
+        f"\r\x1b[K{label} [{bar}] {fraction:4.0%} {done:,}/{total:,}", end="", file=sys.stderr, flush=True
+    )
+
+
+def run_with_progress(command: list[str], label: str, total: int) -> None:
+    # `cp -v` and `rm -v` print one line for every file and directory. The number of lines so far
+    # is the number of entries that the command has processed.
+    terminal = sys.stderr.isatty()
+    if not terminal:
+        print(f"jj-workspace: {label} {total:,} entries", file=sys.stderr)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE)
+    assert process.stdout is not None
+    done = 0
+    shown = 0.0
+    for _ in process.stdout:
+        done += 1
+        if terminal and time.monotonic() - shown >= 0.1:
+            show_progress(label, done, total)
+            shown = time.monotonic()
+    if process.wait() != 0:
+        if terminal:
+            print(file=sys.stderr)
+        raise subprocess.CalledProcessError(process.returncode, command)
+    if terminal:
+        show_progress(label, total, total)
+        print(file=sys.stderr)
+
+
 def convert(args: argparse.Namespace) -> None:
     root = workspace_root(DEFAULT)
     if is_subvolume(root):
@@ -396,11 +443,13 @@ def convert(args: argparse.Namespace) -> None:
     for path in (new, old):
         if path.exists() or path.is_symlink():
             fail(f"{path} already exists")
+    print(f"jj-workspace: counting the files in {root}", file=sys.stderr)
+    total = count_entries(root)
     run("btrfs", "subvolume", "create", new)
     try:
         # `cp -a` keeps the modification times. Without them, the next build in the subvolume
         # rebuilds every target.
-        run("cp", "-a", "--reflink=always", f"{root}/.", f"{new}/")
+        run_with_progress(["cp", "-av", "--reflink=always", f"{root}/.", f"{new}/"], "copying", total)
         root.rename(old)
         try:
             new.rename(root)
@@ -410,7 +459,7 @@ def convert(args: argparse.Namespace) -> None:
     except BaseException:
         delete_subvolume(new)
         raise
-    shutil.rmtree(old)
+    run_with_progress(["rm", "-rfv", str(old)], "deleting the old directory", total)
     print(f"jj-workspace: converted {root} to a btrfs subvolume", file=sys.stderr)
     if Path(os.environ.get("PWD", "/")).is_relative_to(root):
         # The shell that runs `jj convert` still has the deleted directory as its working directory.
