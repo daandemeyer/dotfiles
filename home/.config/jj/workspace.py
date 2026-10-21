@@ -31,14 +31,15 @@ METADATA = (".jj", ".git")
 # Zed saves the files of a worktree in a commit under this namespace before it removes the
 # worktree. Restoring the archived thread writes the files from that commit into a new worktree.
 ZED_ARCHIVE_REFS = "refs/archived-worktrees/"
-ZED_ARCHIVE_MAX_AGE = 10 * 60
+# Zed's worktree picker offers to force delete a worktree when the error of the remove command
+# contains the error that `git worktree remove` prints for a worktree with changes.
+DIRTY_WORKTREE = "contains modified or untracked files, use --force to delete it"
 # `jj util snapshot` only warns about new files that are larger than snapshot.max-new-file-size or
 # that snapshot.auto-track doesn't match, and leaves them out of the snapshot. ws-remove deletes
 # every file of the workspace afterwards, so its snapshot has to include those files too.
 SNAPSHOT_EVERY_FILE = ("--config", "snapshot.max-new-file-size=1TiB", "--config", 'snapshot.auto-track="all()"')
 WORKSPACE_ROOTS = 'self.name() ++ "\\t" ++ self.root() ++ "\\n"'
-# Zed doesn't save the description of a commit, so a described commit is never abandoned.
-WORKING_COPY = 'commit_id ++ if(!empty && !description, " undescribed")'
+WORKING_COPY = 'commit_id ++ " " ++ empty ++ " " ++ if(description, "described", "undescribed")'
 
 
 def run(*args: str | Path, cwd: Path | None = None) -> str:
@@ -109,21 +110,12 @@ def delete_subvolume(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def archived_by_zed(root: Path, commit: str) -> bool:
+def saved_by_zed(root: Path, commit: str) -> bool:
     if not (root / ".git").is_dir():
         return False
     tree = run("git", "-C", root, "rev-parse", f"{commit}^{{tree}}").strip()
-    archives = run(
-        "git", "-C", root, "for-each-ref", "--format=%(tree) %(committerdate:unix)", ZED_ARCHIVE_REFS
-    )
-    # Two worktrees on the same commit without changes have the same tree. Zed creates the archive
-    # commit right before it runs the remove command. An older archive commit with the same tree can
-    # come from an earlier archive of another clean worktree on the same commit.
-    for line in archives.splitlines():
-        archive_tree, created = line.split()
-        if archive_tree == tree and time.time() - int(created) < ZED_ARCHIVE_MAX_AGE:
-            return True
-    return False
+    archives = run("git", "-C", root, "for-each-ref", "--format=%(tree)", ZED_ARCHIVE_REFS)
+    return tree in archives.split()
 
 
 def parent_pid(pid: int) -> int:
@@ -318,26 +310,27 @@ def remove(args: argparse.Namespace) -> None:
     # `jj util snapshot` records uncommitted changes in the working-copy commit. The changes stay
     # in the repository after the files are deleted.
     run("jj", "-R", path, *SNAPSHOT_EVERY_FILE, "util", "snapshot")
-    commit, _, changes = (
-        run("jj", "-R", path, "log", "--no-graph", "-r", "@", "-T", WORKING_COPY).strip().partition(" ")
-    )
-    archived = archived_by_zed(root, commit)
-    # Before Zed archives a worktree, Zed checks that no other thread or terminal uses the worktree.
-    # The agent of the archived thread can still run in the worktree, so the process check would
-    # make every archive fail. Zed's worktree picker doesn't check anything, so the process check
-    # runs for every other removal.
-    if not archived:
+    commit, empty, description = run(
+        "jj", "--ignore-working-copy", "-R", path, "log", "--no-graph", "-r", "@", "-T", WORKING_COPY
+    ).split()
+    # Zed passes --force when it archives a thread and when the user confirms a force delete in the
+    # worktree picker. Before Zed archives a thread, it checks that no other thread or terminal uses
+    # the worktree, but the agent of the archived thread can still run in it.
+    if not args.force:
         processes = processes_in(path)
         if processes:
             fail(f"{path} is the working directory of {', '.join(processes)}")
+        if empty == "false":
+            fail(f"'{path}' {DIRTY_WORKTREE}")
     # `jj workspace forget` only unregisters the Git worktree while the .git file of the workspace
     # exists, so it has to run before the subvolume is deleted.
     run("jj", "-R", root, "workspace", "forget", name)
     delete_subvolume(path)
     # A Zed archive commit with the same tree contains every change in the working-copy commit.
     # Restoring the thread recreates the changes in a new working-copy commit. Keeping the old
-    # commit as well would leave a second copy of the changes in `jj log`.
-    if archived and changes == "undescribed":
+    # commit as well would leave a second copy of the changes in `jj log`. Zed doesn't save the
+    # description of a commit, so a described commit is never abandoned.
+    if empty == "false" and description == "undescribed" and saved_by_zed(root, commit):
         run("jj", "-R", root, "abandon", commit)
 
     if path.is_relative_to(worktrees_directory(root)):
@@ -652,6 +645,9 @@ def main() -> None:
     add_parser.set_defaults(func=add)
     remove_parser = commands.add_parser("remove", help="delete a snapshot workspace and forget it")
     remove_parser.add_argument("path", type=Path)
+    remove_parser.add_argument(
+        "--force", action="store_true", help="remove the workspace even if it has changes or is in use"
+    )
     remove_parser.set_defaults(func=remove)
     seed_parser = commands.add_parser(
         "seed", help="move the default workspace onto the megamerge and build it for new workspaces"
