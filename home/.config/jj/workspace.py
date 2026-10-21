@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
+from collections.abc import Iterable
 from pathlib import Path
 from typing import IO, NoReturn
 
@@ -23,10 +25,9 @@ PROGRESS_WIDTH = 30
 ADD_LOCK_TIMEOUT = 60
 CLONE_USAGE = "jj clone <source> [<destination>] [<jj git clone option>...]"
 SEED_REVSET = "coalesce(megamerge(), trunk())"
-SYNC_STATE = "sync.json"
-# `jj duplicate` prints one line for every commit: the original commit ID, then the change ID and
-# the commit ID of the copy.
-DUPLICATED = re.compile(r"^Duplicated ([0-9a-f]+) as ([k-z]+) ([0-9a-f]+)")
+# `jj duplicate` prints one line for every commit with the original commit ID and the change ID of
+# the copy.
+DUPLICATED = re.compile(r"^Duplicated ([0-9a-f]+) as ([k-z]+) ")
 COMMIT_LINE = '"  " ++ change_id.short() ++ " " ++ description.first_line() ++ "\\n"'
 # btrfs gives the root directory of every subvolume inode number 256.
 SUBVOLUME_ROOT_INODE = 256
@@ -415,27 +416,59 @@ def resolve_by_change(revset: str, template: str) -> dict[str, str]:
     return dict(line.split(" ", 1) for line in lines.splitlines())
 
 
-def sync_state_path() -> Path:
-    root = workspace_root()
-    if root == workspace_root(DEFAULT):
+def sync_workspace() -> tuple[Path, str]:
+    root = workspace_root(DEFAULT)
+    current = workspace_root()
+    if current == root:
         fail("run `jj sync` and `jj land` from a workspace other than the default one")
-    return root / ".jj" / SYNC_STATE
+    return root, workspace_name(current)
+
+
+def sync_state_path(root: Path, name: str) -> Path:
+    # The state lives in the repository rather than in the workspace. Zed deletes the workspace when
+    # it archives the thread, and restores it with the same name.
+    return root / ".jj" / "repo" / "sync" / f"{urllib.parse.quote(name, safe='')}.json"
+
+
+def change_ids(changes: Iterable[str]) -> str:
+    # `change_id()` resolves to every commit of a divergent change and to nothing for an abandoned
+    # change. A plain change ID fails in both cases.
+    return " | ".join(f"change_id({change})" for change in changes) or "none()"
 
 
 def abort_sync(path: Path) -> None:
     if not path.exists():
         fail("no `jj sync` is in progress in this workspace")
     state = json.loads(path.read_text())
-    copies = [copy for copy in state["copies"].values() if resolve(f"present({copy})")]
+    copies = resolve(change_ids(state["copies"].values()))
     if copies:
         run("jj", "abandon", *copies)
     path.unlink()
-    subprocess.run(["jj", "new", "megamerge()"], check=True)
+    subprocess.run(["jj", "new", f"change_id({state['megamerge']})"], check=True)
     print("jj-workspace: abandoned the synced copies of the stack", file=sys.stderr)
 
 
+def duplicate(originals: dict[str, str]) -> dict[str, str]:
+    result = subprocess.run(
+        ["jj", "duplicate", *originals.values()], check=True, stderr=subprocess.PIPE, text=True
+    )
+    copies = {}
+    for line in result.stderr.splitlines():
+        match = DUPLICATED.match(line)
+        if match:
+            original = next(change for change, commit in originals.items() if commit.startswith(match[1]))
+            copies[original] = resolve(match[2], "change_id")[0]
+    if sorted(copies) != sorted(originals):
+        abandon = [match[2] for line in result.stderr.splitlines() if (match := DUPLICATED.match(line))]
+        if abandon:
+            run("jj", "abandon", *abandon)
+        fail(f"could not map every commit to its copy in the output of `jj duplicate`:\n{result.stderr}")
+    return copies
+
+
 def sync(args: argparse.Namespace) -> None:
-    path = sync_state_path()
+    root, name = sync_workspace()
+    path = sync_state_path(root, name)
     if args.abort:
         abort_sync(path)
         return
@@ -443,65 +476,58 @@ def sync(args: argparse.Namespace) -> None:
         fail("a `jj sync` is already in progress in this workspace; run `jj land` or `jj sync --abort`")
 
     subprocess.run(["jj", "git", "fetch"], check=True)
-    if not resolve("parents(roots(trunk()..megamerge())) ~ trunk()"):
+    megamerges = resolve("megamerge()", "change_id")
+    if len(megamerges) != 1:
+        fail("the repository has no megamerge")
+    megamerge = megamerges[0]
+    stack = f"trunk()..change_id({megamerge})"
+    if not resolve(f"parents(roots({stack})) ~ trunk()"):
         print("jj-workspace: the megamerge is already on trunk()", file=sys.stderr)
         return
+    # `jj land` rewrites the original stack, and jj refuses to rewrite immutable commits.
+    immutable = run("jj", "log", "--no-graph", "-r", f"({stack}) ~ mutable()", "-T", COMMIT_LINE)
+    if immutable:
+        fail(f"the stack contains immutable commits that `jj land` can't rewrite:\n{immutable}")
+    divergent = run("jj", "log", "--no-graph", "-r", f"({stack}) & divergent()", "-T", COMMIT_LINE)
+    if divergent:
+        fail(f"the stack contains divergent changes:\n{divergent}")
     trunk = resolve("trunk()")[0]
-    originals = resolve_by_change("trunk()..megamerge()", "commit_id")
-    megamerge = resolve("megamerge()", "change_id")[0]
+    originals = resolve_by_change(stack, "commit_id")
 
     # The copies get new change IDs. The other workspaces keep working on the original stack until
-    # `jj land` moves their commits onto the copies.
-    result = subprocess.run(
-        ["jj", "duplicate", *originals.values(), "--onto", trunk],
-        check=True,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    by_commit = {commit: change for change, commit in originals.items()}
-    copies = {}
-    for line in result.stderr.splitlines():
-        match = DUPLICATED.match(line)
-        if not match:
-            continue
-        original = next(change for commit, change in by_commit.items() if commit.startswith(match[1]))
-        copies[original] = resolve(match[3], "change_id")[0]
-    if sorted(copies) != sorted(originals):
-        fail(f"could not map every commit to its copy in the output of `jj duplicate`:\n{result.stderr}")
+    # `jj land` rebases it and moves the content of the copies into it.
+    copies = duplicate(originals)
+    state = {"trunk": trunk, "megamerge": megamerge, "originals": originals, "copies": copies}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state))
+    try:
+        # These are the options of `jj restack`. --skip-emptied abandons the copies that trunk()
+        # already contains.
+        roots = f"roots({change_ids(copies.values())})"
+        run("jj", "rebase", "-s", roots, "-o", trunk, "--skip-emptied", "--simplify-parents")
+        remaining = set(resolve(change_ids(copies.values()), "change_id"))
+        state["copies"] = copies = {original: copy for original, copy in copies.items() if copy in remaining}
+        path.write_text(json.dumps(state))
+        subprocess.run(["jj", "new", f"change_id({copies[megamerge]})" if megamerge in copies else trunk], check=True)
+    except BaseException:
+        abort_sync(path)
+        raise
 
-    # `jj restack` drops commits that became empty because trunk() already contains them. A merge
-    # commit like the megamerge is empty on its own, so a copy only counts as emptied when its
-    # original wasn't empty.
-    original_empty = resolve_by_change(" | ".join(originals.values()), "empty")
-    copy_empty = resolve_by_change(" | ".join(copies.values()), "empty")
-    emptied = [
-        copy
-        for original, copy in copies.items()
-        if original_empty[original] == "false" and copy_empty[copy] == "true"
-    ]
-    if emptied:
-        run("jj", "abandon", *emptied)
-        copies = {original: copy for original, copy in copies.items() if copy not in emptied}
-    run("jj", "simplify-parents", "-r", " | ".join(copies.values()))
-    subprocess.run(["jj", "new", copies[megamerge]], check=True)
-
-    path.write_text(
-        json.dumps({"trunk": trunk, "megamerge": megamerge, "originals": originals, "copies": copies})
-    )
-    conflicts = run("jj", "log", "--no-graph", "-r", f"conflicts() & ({' | '.join(copies.values())})", "-T", COMMIT_LINE)
+    conflicts = run("jj", "log", "--no-graph", "-r", f"conflicts() & ({change_ids(copies.values())})", "-T", COMMIT_LINE)
+    copy = f"the copy of the megamerge is {copies[megamerge]}" if megamerge in copies else "trunk() contains the whole stack"
     if conflicts:
-        print(f"jj-workspace: resolve the conflicts in the copies, then run `jj land`:\n{conflicts}", file=sys.stderr)
+        print(f"jj-workspace: {copy}. Resolve the conflicts in the copies, then run `jj land`:\n{conflicts}", file=sys.stderr)
     else:
-        print("jj-workspace: the copies have no conflicts; build them, then run `jj land`", file=sys.stderr)
+        print(f"jj-workspace: {copy}. The copies have no conflicts; build them, then run `jj land`", file=sys.stderr)
 
 
 def land(args: argparse.Namespace) -> None:
-    path = sync_state_path()
+    root, name = sync_workspace()
+    path = sync_state_path(root, name)
     if not path.exists():
         fail("no `jj sync` is in progress in this workspace")
     state = json.loads(path.read_text())
     originals, copies = state["originals"], state["copies"]
-    root = workspace_root(DEFAULT)
 
     with lock_megamerge(root, fcntl.LOCK_EX):
         changed = [change for change, commit in originals.items() if resolve(f"present({change})") != [commit]]
