@@ -32,6 +32,10 @@ METADATA = (".jj", ".git")
 # worktree. Restoring the archived thread writes the files from that commit into a new worktree.
 ZED_ARCHIVE_REFS = "refs/archived-worktrees/"
 ZED_ARCHIVE_MAX_AGE = 10 * 60
+# `jj util snapshot` only warns about new files that are larger than snapshot.max-new-file-size or
+# that snapshot.auto-track doesn't match, and leaves them out of the snapshot. ws-remove deletes
+# every file of the workspace afterwards, so its snapshot has to include those files too.
+SNAPSHOT_EVERY_FILE = ("--config", "snapshot.max-new-file-size=1TiB", "--config", 'snapshot.auto-track="all()"')
 WORKSPACE_ROOTS = 'self.name() ++ "\\t" ++ self.root() ++ "\\n"'
 # Zed doesn't save the description of a commit, so a described commit is never abandoned.
 WORKING_COPY = 'commit_id ++ if(!empty && !description, " undescribed")'
@@ -289,7 +293,7 @@ def remove(args: argparse.Namespace) -> None:
 
     # `jj util snapshot` records uncommitted changes in the working-copy commit. The changes stay
     # in the repository after the files are deleted.
-    run("jj", "-R", path, "util", "snapshot")
+    run("jj", "-R", path, *SNAPSHOT_EVERY_FILE, "util", "snapshot")
     commit, _, changes = (
         run("jj", "-R", path, "log", "--no-graph", "-r", "@", "-T", WORKING_COPY).strip().partition(" ")
     )
