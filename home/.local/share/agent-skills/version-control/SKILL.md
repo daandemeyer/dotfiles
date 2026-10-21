@@ -97,9 +97,13 @@ ignored file of the default workspace: `buck-out`, build directories and the
 untracked tine files. Builds in it reuse those outputs and only rebuild what
 changed, so never delete them or set up new build directories next to them.
 The user updates the build directories of the default workspace with
-`jj seed`. Never run it yourself. If a meson build directory has no
-`build.ninja`, run `meson setup --reconfigure <dir>` (through `tine box --` in
-a tine project) before building.
+`jj seed`. Never run it yourself.
+
+The meson build directories in the workspace have no `build.ninja`. The one
+from the default workspace contains the paths of the default workspace, so it
+was removed when the workspace was created. Before the first build in a meson
+build directory, run `meson setup --reconfigure <dir>` (through `tine box --`
+in a tine project). It takes a few seconds and keeps every build output.
 
 ### Syncing the stack
 

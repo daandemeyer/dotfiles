@@ -76,6 +76,10 @@ Then run every build, test and run command through the box:
     tine box -- meson setup build
     tine box -- meson test -C build
 
+A build directory that exists but has no `build.ninja` was copied from another
+checkout. Run `tine box -- meson setup --reconfigure <dir>` before building in
+it. That rewrites the paths and keeps every build output.
+
 When a tool or library is missing, add its package to `packages` in `BUCK`.
 Keep the `BUCK` file and the files `tine init` writes out of commits unless the
 user asks otherwise.

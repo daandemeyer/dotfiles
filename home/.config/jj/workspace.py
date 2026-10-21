@@ -236,35 +236,20 @@ def meson_source_dir(build_ninja: Path) -> str | None:
     return None
 
 
-def relocate_meson_build_dirs(root: Path, dest: Path) -> None:
-    """meson writes absolute paths into a build directory.
-
-    Without a reconfigure, ninja in `dest` runs the code generators from `root`. `meson test` in
-    `dest` runs the test binaries from `root`.
-    """
+def detach_meson_build_dirs(root: Path, dest: Path) -> None:
+    # meson writes absolute paths into build.ninja. With the build.ninja of the default workspace,
+    # ninja in `dest` runs the code generators from `root` and writes outputs into the build
+    # directory of `root`. A reconfigure takes about ten seconds per build directory in a tine
+    # box. The agent that uses a build directory reconfigures it before its first build.
     for build_ninja in sorted([*dest.glob("*/build.ninja"), *dest.glob("*/*/build.ninja")]):
         build_dir = build_ninja.parent
         if not (build_dir / "meson-private" / "coredata.dat").exists():
             continue
         if meson_source_dir(build_ninja) != str(root):
             continue
-        relative = build_dir.relative_to(dest)
-        command = ["meson", "setup", "--reconfigure", str(relative)]
-        if (dest / "BUCK").exists() and shutil.which("tine"):
-            command = ["tine", "box", "--", *command]
-        print(f"jj-workspace: reconfiguring {relative}", file=sys.stderr)
-        if shutil.which(command[0]):
-            result = subprocess.run(
-                command, cwd=dest, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-            )
-            if result.returncode == 0:
-                continue
-            print(result.stdout, end="", file=sys.stderr)
         build_ninja.unlink()
-        warn(
-            f"could not reconfigure {relative}, so its build.ninja was removed to keep ninja from "
-            f"building with the paths of {root}. Run `meson setup --reconfigure {relative}` in {dest}."
-        )
+        relative = build_dir.relative_to(dest)
+        warn(f"removed {relative}/build.ninja; run `meson setup --reconfigure {relative}` before building")
 
 
 def current_revision(root: Path, revision: str) -> str:
@@ -333,7 +318,7 @@ def add(args: argparse.Namespace) -> None:
         shutil.rmtree(metadata, ignore_errors=True)
     lock.close()
 
-    relocate_meson_build_dirs(root, dest)
+    detach_meson_build_dirs(root, dest)
     print(dest)
 
 
