@@ -18,6 +18,9 @@ DEFAULT = "default"
 # New workspaces start on the megamerge, so the build directories of the default workspace are
 # built from the megamerge. A repository without a megamerge builds trunk().
 PROGRESS_WIDTH = 30
+# Zed runs the create command as a job of the repository's git job queue, and every later git job
+# of the repository waits for it. ws-add doesn't wait for a whole `jj seed` build.
+ADD_LOCK_TIMEOUT = 60
 CLONE_USAGE = "jj clone <source> [<destination>] [<jj git clone option>...]"
 SEED_REVSET = "coalesce(megamerge(), trunk())"
 SYNC_STATE = "sync.json"
@@ -173,18 +176,25 @@ def processes_in(path: Path, open_files: bool = False) -> list[str]:
     return processes
 
 
-def lock_megamerge(root: Path, operation: int) -> IO[str]:
+def lock_megamerge(root: Path, operation: int, timeout: float | None = None) -> IO[str]:
     # `jj ws-add` copies the build directories of the default workspace into the new workspace.
     # While `jj seed` runs its build commands, the build directories of the default workspace
     # contain partially written outputs. While `jj land` runs, the megamerge and the default
     # workspace move to the synced stack in several jj operations.
     lock = (root / ".jj" / "megamerge.lock").open("a")
-    try:
-        fcntl.flock(lock, operation | fcntl.LOCK_NB)
-    except BlockingIOError:
-        warn("waiting for `jj seed` or `jj land` to finish")
-        fcntl.flock(lock, operation)
-    return lock
+    deadline = None if timeout is None else time.monotonic() + timeout
+    waiting = False
+    while True:
+        try:
+            fcntl.flock(lock, operation | fcntl.LOCK_NB)
+            return lock
+        except BlockingIOError:
+            if deadline is not None and time.monotonic() > deadline:
+                fail(f"`jj seed` or `jj land` still runs in {root}; try again when it's done")
+            if not waiting:
+                warn("waiting for `jj seed` or `jj land` to finish")
+                waiting = True
+            time.sleep(0.2)
 
 
 def remove_entry(path: Path) -> None:
@@ -288,7 +298,7 @@ def add(args: argparse.Namespace) -> None:
         run("jj", "-R", root, "workspace", "add", "--name", name, *colocate, *revisions, dest)
         print(dest)
         return
-    lock = lock_megamerge(root, fcntl.LOCK_SH)
+    lock = lock_megamerge(root, fcntl.LOCK_SH, ADD_LOCK_TIMEOUT)
     run("jj", "-R", root, "workspace", "add", "--name", name, *colocate, *revisions, dest)
     metadata = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}."))
     try:
