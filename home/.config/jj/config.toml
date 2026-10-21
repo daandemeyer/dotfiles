@@ -89,7 +89,7 @@ seed = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path -
 # which `jj ws-add` requires for the default workspace.
 clone = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" clone "$@"', "--"]
 
-# `jj convert` to convert the default workspace of an existing checkout to a btrfs subvolume.
+# `jj convert <path>` to convert an existing checkout to a btrfs subvolume.
 convert = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" convert "$@"', "--"]
 
 [ui]

@@ -229,7 +229,7 @@ def relocate_meson_build_dirs(root: Path, dest: Path) -> None:
 def add(args: argparse.Namespace) -> None:
     root = workspace_root(DEFAULT)
     if not is_subvolume(root):
-        fail(f"{root} is not a btrfs subvolume. Run `jj convert` in {root} to convert it.")
+        fail(f"{root} is not a btrfs subvolume. Run `jj convert {root}` to convert it.")
     lock = lock_seed(root, fcntl.LOCK_SH)
     dest = args.path.absolute()
     if dest.exists() or dest.is_symlink():
@@ -426,7 +426,9 @@ def run_with_progress(command: list[str], label: str, total: int) -> None:
 
 
 def convert(args: argparse.Namespace) -> None:
-    root = workspace_root(DEFAULT)
+    root = args.path.resolve()
+    if not root.is_dir():
+        fail(f"{root} is not a directory")
     if is_subvolume(root):
         print(f"jj-workspace: {root} is already a btrfs subvolume", file=sys.stderr)
         return
@@ -487,9 +489,8 @@ def main() -> None:
     )
     clone_parser.add_argument("arguments", nargs=argparse.REMAINDER)
     clone_parser.set_defaults(func=clone)
-    convert_parser = commands.add_parser(
-        "convert", help="convert the default workspace of the repository to a btrfs subvolume"
-    )
+    convert_parser = commands.add_parser("convert", help="convert a directory to a btrfs subvolume")
+    convert_parser.add_argument("path", type=Path)
     convert_parser.set_defaults(func=convert)
     # argparse.REMAINDER doesn't collect options that come before the first positional argument.
     # parse_known_args() returns the leading options in a separate list. `jj clone` fails when the
