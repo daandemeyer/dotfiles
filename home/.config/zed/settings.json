@@ -124,6 +124,10 @@
     "dock": "right",
     "expand_terminal_card": false
   },
+  "git": {
+    "worktree_create_command": ["jj", "ws-add"],
+    "worktree_remove_command": ["jj", "ws-remove"]
+  },
   "project_panel": {
     "dock": "left",
     "sticky_scroll": false,
