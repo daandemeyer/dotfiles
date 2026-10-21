@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -SIB
-"""Clone jj repositories into btrfs subvolumes and create workspaces as snapshots of the default workspace."""
+"""Keep jj checkouts on btrfs subvolumes and manage workspaces that are snapshots of them."""
 
 import argparse
 import fcntl
@@ -18,12 +18,12 @@ from pathlib import Path
 from typing import IO, NoReturn
 
 DEFAULT = "default"
-# New workspaces start on the megamerge, so the build directories of the default workspace are
-# built from the megamerge. A repository without a megamerge builds trunk().
 PROGRESS_WIDTH = 30
 # Zed runs the create command as a job of the repository's git job queue, and every later git job
 # of the repository waits for it. ws-add doesn't wait for a whole `jj seed` build.
 ADD_LOCK_TIMEOUT = 60
+# New workspaces start on the megamerge, so the build directories of the default workspace are
+# built from the megamerge. A repository without a megamerge builds trunk().
 SEED_REVSET = "coalesce(megamerge(), trunk())"
 # `jj duplicate` prints one line for every commit with the original commit ID and the change ID of
 # the copy.
@@ -170,6 +170,8 @@ def processes_in(path: Path, open_files: bool = False) -> list[str]:
             cwd = Path(os.readlink(entry / "cwd"))
             comm = (entry / "comm").read_text().strip()
         except OSError:
+            # Only root can read the working directory of another user's process. processes_in()
+            # doesn't check the processes of other users.
             continue
         if not cwd.is_relative_to(path) and not (open_files and has_open_file_in(entry, path)):
             continue
@@ -319,10 +321,8 @@ def add(args: argparse.Namespace) -> None:
         # removes them, so the new working-copy commit starts out empty.
         run("jj", "-R", dest, "restore")
     except BaseException:
-        if dest.exists() and is_subvolume(dest):
+        if dest.exists():
             delete_subvolume(dest)
-        elif dest.exists():
-            shutil.rmtree(dest)
         run("jj", "-R", root, "workspace", "forget", name)
         if colocate:
             # `jj workspace forget` only unregisters the Git worktree while the .git file of the
@@ -403,7 +403,7 @@ def seed(args: argparse.Namespace) -> None:
     # `jj new` moves the default workspace onto the megamerge. The changes of the old working-copy
     # commit stay in that commit and aren't part of the seed build.
     if run("jj", "log", "--no-graph", "-r", "@", "-T", 'if(empty && !description, "clean")') != "clean":
-        fail("the working-copy commit of the default workspace isn't empty; move its changes first")
+        fail("the working-copy commit of the default workspace has changes or a description; move them first")
 
     conflicts = run("jj", "log", "--no-graph", "-r", f"conflicts() & ::({SEED_REVSET})", "-T", COMMIT_LINE)
     if conflicts:
