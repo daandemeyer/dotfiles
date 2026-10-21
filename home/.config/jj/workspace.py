@@ -24,7 +24,6 @@ PROGRESS_WIDTH = 30
 # Zed runs the create command as a job of the repository's git job queue, and every later git job
 # of the repository waits for it. ws-add doesn't wait for a whole `jj seed` build.
 ADD_LOCK_TIMEOUT = 60
-CLONE_USAGE = "jj clone <source> [<destination>] [<jj git clone option>...]"
 SEED_REVSET = "coalesce(megamerge(), trunk())"
 # `jj duplicate` prints one line for every commit with the original commit ID and the change ID of
 # the copy.
@@ -638,9 +637,7 @@ def clone_destination(source: str) -> str:
 
 
 def clone(args: argparse.Namespace) -> None:
-    if args.leading or not args.arguments:
-        fail(f"usage: {CLONE_USAGE}")
-    source, *rest = args.arguments
+    source, rest = args.source, args.rest
     if rest and not rest[0].startswith("-"):
         destination, *options = rest
     else:
@@ -783,20 +780,15 @@ def main() -> None:
     clone_parser = commands.add_parser(
         "clone",
         help="clone a repository into a new btrfs subvolume",
-        usage=CLONE_USAGE,
+        usage="jj clone <source> [<destination>] [<jj git clone option>...]",
     )
-    clone_parser.add_argument("arguments", nargs=argparse.REMAINDER)
+    clone_parser.add_argument("source")
+    clone_parser.add_argument("rest", nargs=argparse.REMAINDER)
     clone_parser.set_defaults(func=clone)
     convert_parser = commands.add_parser("convert", help="convert a directory to a btrfs subvolume")
     convert_parser.add_argument("path", type=Path)
     convert_parser.set_defaults(func=convert)
-    # argparse.REMAINDER doesn't collect options that come before the first positional argument.
-    # parse_known_args() returns the leading options in a separate list. `jj clone` fails when the
-    # list isn't empty.
-    args, leading = parser.parse_known_args()
-    args.leading = leading
-    if args.leading and args.command != "clone":
-        parser.error(f"unrecognized arguments: {' '.join(args.leading)}")
+    args = parser.parse_args()
     try:
         args.func(args)
     except subprocess.CalledProcessError as error:
