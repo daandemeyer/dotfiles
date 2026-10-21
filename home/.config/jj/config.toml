@@ -85,6 +85,10 @@ ws-remove = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config p
 # `jj seed` to rebuild the build directories that `jj ws-add` copies into new workspaces.
 seed = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" seed "$@"', "--"]
 
+# `jj clone <source> [<destination>] [<jj git clone option>...]` to clone into a btrfs subvolume,
+# which `jj ws-add` requires for the default workspace.
+clone = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" clone "$@"', "--"]
+
 [ui]
 default-command = "log"
 editor = "systemd-run --user --pipe --wait --collect --quiet zed --wait"

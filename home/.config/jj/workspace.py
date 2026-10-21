@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -SIB
-"""Create and remove jj workspaces as btrfs snapshots of the default workspace."""
+"""Clone jj repositories into btrfs subvolumes and create workspaces as snapshots of the default workspace."""
 
 import argparse
 import fcntl
@@ -16,6 +16,7 @@ from typing import IO, NoReturn
 DEFAULT = "default"
 # New workspaces start on the megamerge, so the build directories of the default workspace are
 # built from the megamerge. A repository without a megamerge builds trunk().
+CLONE_USAGE = "jj clone <source> [<destination>] [<jj git clone option>...]"
 SEED_REVSET = "coalesce(megamerge(), trunk())"
 # btrfs gives the root directory of every subvolume inode number 256.
 SUBVOLUME_ROOT_INODE = 256
@@ -340,6 +341,35 @@ def seed(args: argparse.Namespace) -> None:
                 sys.exit(result.returncode)
 
 
+def clone_destination(source: str) -> str:
+    # `jj git clone` names the clone after the last component of the source. The source can be a
+    # path, a URL or an scp-like address such as `git@github.com:systemd/systemd.git`.
+    name = source.rstrip("/").replace(":", "/").rpartition("/")[2]
+    return name.removesuffix(".git")
+
+
+def clone(args: argparse.Namespace) -> None:
+    if args.leading or not args.arguments:
+        fail(f"usage: {CLONE_USAGE}")
+    source, *rest = args.arguments
+    if rest and not rest[0].startswith("-"):
+        destination, *options = rest
+    else:
+        destination, options = clone_destination(source), rest
+    dest = Path(destination).absolute()
+    if dest.exists() or dest.is_symlink():
+        fail(f"{dest} already exists")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if run("stat", "--file-system", "--format=%T", dest.parent).strip() != "btrfs":
+        fail(f"{dest.parent} is not on a btrfs filesystem")
+
+    run("btrfs", "subvolume", "create", dest)
+    result = subprocess.run(["jj", "git", "clone", *options, source, str(dest)])
+    if result.returncode != 0:
+        delete_subvolume(dest)
+        sys.exit(result.returncode)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -354,7 +384,20 @@ def main() -> None:
         "seed", help="update the default workspace and build it for new workspaces to copy"
     )
     seed_parser.set_defaults(func=seed)
-    args = parser.parse_args()
+    clone_parser = commands.add_parser(
+        "clone",
+        help="clone a repository into a new btrfs subvolume",
+        usage=CLONE_USAGE,
+    )
+    clone_parser.add_argument("arguments", nargs=argparse.REMAINDER)
+    clone_parser.set_defaults(func=clone)
+    # argparse.REMAINDER doesn't collect options that come before the first positional argument.
+    # parse_known_args() returns the leading options in a separate list. `jj clone` fails when the
+    # list isn't empty.
+    args, leading = parser.parse_known_args()
+    args.leading = leading
+    if args.leading and args.command != "clone":
+        parser.error(f"unrecognized arguments: {' '.join(args.leading)}")
     try:
         args.func(args)
     except subprocess.CalledProcessError as error:
