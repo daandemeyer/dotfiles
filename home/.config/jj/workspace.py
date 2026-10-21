@@ -74,10 +74,6 @@ def workspace_name(path: Path) -> str:
     fail(f"{path} is not the root of a jj workspace")
 
 
-def worktrees_directory(root: Path) -> Path:
-    return root.parent / "worktrees"
-
-
 def mounts_under(path: Path) -> list[Path]:
     mounts = []
     for line in Path("/proc/self/mountinfo").read_text().splitlines():
@@ -332,15 +328,6 @@ def remove(args: argparse.Namespace) -> None:
     # description of a commit, so a described commit is never abandoned.
     if empty == "false" and description == "undescribed" and saved_by_zed(root, commit):
         run("jj", "-R", root, "abandon", commit)
-
-    if path.is_relative_to(worktrees_directory(root)):
-        parent = path.parent
-        while parent.is_relative_to(worktrees_directory(root)):
-            try:
-                parent.rmdir()
-            except OSError:
-                break
-            parent = parent.parent
 
 
 def seed(args: argparse.Namespace) -> None:
