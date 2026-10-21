@@ -270,9 +270,13 @@ def add(args: argparse.Namespace) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest = dest.resolve()
     # Zed creates worktrees at ../worktrees/<project>/<name>/<project>, where the last path component
-    # is always the project name. jj workspace names must be unique, so the workspace is named after
-    # the <name> component.
-    name = dest.parent.name if dest.name == root.name else dest.name
+    # is always the project name and <name> can contain slashes. jj workspace names must be unique,
+    # so the workspace is named after all of <name>.
+    worktrees = root.parent / "worktrees" / root.name
+    if dest.name == root.name and dest.parent.is_relative_to(worktrees) and dest.parent != worktrees:
+        name = str(dest.parent.relative_to(worktrees))
+    else:
+        name = dest.parent.name if dest.name == root.name else dest.name
 
     revisions = [word for revision in args.revision for word in ("--revision", revision)]
     colocate = ["--colocate"] if (root / ".git").is_dir() else []
