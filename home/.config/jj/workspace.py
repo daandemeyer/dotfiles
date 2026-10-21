@@ -114,7 +114,21 @@ def ancestors(pid: int) -> list[int]:
     return pids
 
 
-def processes_in(path: Path) -> list[str]:
+def has_open_file_in(process: Path, path: Path) -> bool:
+    try:
+        fds = list((process / "fd").iterdir())
+    except OSError:
+        return False
+    for fd in fds:
+        try:
+            if Path(os.readlink(fd)).is_relative_to(path):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def processes_in(path: Path, open_files: bool = False) -> list[str]:
     ignored = {os.getpid(), *ancestors(os.getpid())}
     processes = []
     for entry in Path("/proc").iterdir():
@@ -125,7 +139,7 @@ def processes_in(path: Path) -> list[str]:
             comm = (entry / "comm").read_text().strip()
         except OSError:
             continue
-        if not cwd.is_relative_to(path):
+        if not cwd.is_relative_to(path) and not (open_files and has_open_file_in(entry, path)):
             continue
         processes.append(f"{comm} ({entry.name})")
     return processes
@@ -214,13 +228,7 @@ def relocate_meson_build_dirs(root: Path, dest: Path) -> None:
 def add(args: argparse.Namespace) -> None:
     root = workspace_root(DEFAULT)
     if not is_subvolume(root):
-        fail(
-            f"{root} is not a btrfs subvolume. Convert it once, with no build or editor using it:\n\n"
-            f"    btrfs subvolume create {root}.new\n"
-            f"    cp -a --reflink=always {root}/. {root}.new/\n"
-            f"    mv {root} {root}.old && mv {root}.new {root}\n"
-            f"    rm -rf {root}.old"
-        )
+        fail(f"{root} is not a btrfs subvolume. Run `jj convert` in {root} to convert it.")
     lock = lock_seed(root, fcntl.LOCK_SH)
     dest = args.path.absolute()
     if dest.exists() or dest.is_symlink():
@@ -370,6 +378,45 @@ def clone(args: argparse.Namespace) -> None:
         sys.exit(result.returncode)
 
 
+def convert(args: argparse.Namespace) -> None:
+    root = workspace_root(DEFAULT)
+    if is_subvolume(root):
+        print(f"jj-workspace: {root} is already a btrfs subvolume", file=sys.stderr)
+        return
+    if run("stat", "--file-system", "--format=%T", root).strip() != "btrfs":
+        fail(f"{root} is not on a btrfs filesystem")
+    # A build or an editor that writes into the checkout during the copy writes into the old
+    # directory. The old directory is deleted after the copy, and the writes are lost.
+    processes = processes_in(root, open_files=True)
+    if processes:
+        fail(f"{root} is in use by {', '.join(processes)}")
+
+    new = root.with_name(f"{root.name}.new")
+    old = root.with_name(f"{root.name}.old")
+    for path in (new, old):
+        if path.exists() or path.is_symlink():
+            fail(f"{path} already exists")
+    run("btrfs", "subvolume", "create", new)
+    try:
+        # `cp -a` keeps the modification times. Without them, the next build in the subvolume
+        # rebuilds every target.
+        run("cp", "-a", "--reflink=always", f"{root}/.", f"{new}/")
+        root.rename(old)
+        try:
+            new.rename(root)
+        except BaseException:
+            old.rename(root)
+            raise
+    except BaseException:
+        delete_subvolume(new)
+        raise
+    shutil.rmtree(old)
+    print(f"jj-workspace: converted {root} to a btrfs subvolume", file=sys.stderr)
+    if Path(os.environ.get("PWD", "/")).is_relative_to(root):
+        # The shell that runs `jj convert` still has the deleted directory as its working directory.
+        print("jj-workspace: run `cd $PWD` to enter the subvolume", file=sys.stderr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -391,6 +438,10 @@ def main() -> None:
     )
     clone_parser.add_argument("arguments", nargs=argparse.REMAINDER)
     clone_parser.set_defaults(func=clone)
+    convert_parser = commands.add_parser(
+        "convert", help="convert the default workspace of the repository to a btrfs subvolume"
+    )
+    convert_parser.set_defaults(func=convert)
     # argparse.REMAINDER doesn't collect options that come before the first positional argument.
     # parse_known_args() returns the leading options in a separate list. `jj clone` fails when the
     # list isn't empty.
