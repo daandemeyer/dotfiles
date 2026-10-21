@@ -303,8 +303,13 @@ def add(args: argparse.Namespace) -> None:
     try:
         graft(root, dest, metadata)
         # The snapshot contains the uncommitted changes of the default workspace. `jj restore`
-        # removes them, so the new working-copy commit starts out empty.
-        run("jj", "-R", dest, "restore")
+        # removes them, so the new working-copy commit starts out empty. `jj restore` reads every
+        # file of the snapshot to find them, which takes 0.2 seconds in systemd. When the default
+        # workspace has no uncommitted changes, there is nothing to remove. The `jj log` call
+        # snapshots the default workspace after the btrfs snapshot, so it records every change
+        # that the btrfs snapshot contains.
+        if run("jj", "-R", root, "log", "--no-graph", "-r", "@", "-T", "empty").strip() != "true":
+            run("jj", "-R", dest, "restore")
     except BaseException:
         if dest.exists():
             delete_subvolume(dest)
