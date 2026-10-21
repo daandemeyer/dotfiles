@@ -12,7 +12,8 @@
     "context": "Terminal",
     "bindings": {
       "ctrl-t": "tab_switcher::Toggle",
-      "ctrl-shift-w": "pane::CloseActiveItem"
+      "ctrl-shift-w": "pane::CloseActiveItem",
+      "ctrl-r": "projects::OpenRecent"
     }
   }
 ]
