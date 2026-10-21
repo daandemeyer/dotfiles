@@ -30,24 +30,15 @@ git-push = 'remote_bookmarks(remote=exact:remote)..@ ~ megamerge()'
 'stack(x, n)' = 'ancestors(reachable(x, mutable()), n)'
 
 [snapshot]
-# A command that rewrites a commit below the megamerge rebases the working-copy commits of every
-# other workspace. Without this setting, the next jj command in those workspaces fails until
+# A rewrite of a branch rebases the working-copy commits on top of it. Without this setting, the
+# next jj command in a workspace with a rebased working-copy commit fails until
 # `jj workspace update-stale` runs.
 auto-update-stale = true
 
 [aliases]
-# `jj locked <jj command> [<argument>...]` to run a jj command that rewrites commits below the
-# megamerge. It holds the megamerge lock, so two workspaces can't rewrite the stack at the same
-# time.
-locked = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" locked "$@"', "--"]
-
-# `jj stack <revset>...` to move commits below the megamerge as new parents of it
-stack = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" stack "$@"', "--"]
-
-# `jj unstack <revset>` to move commits out from below the megamerge
-unstack = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" locked rebase --onto "trunk()" --revision "$@"', "--"]
-
-restack = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" locked rebase --onto "trunk()" --source "roots(trunk()..) & stack()" --simplify-parents --skip-emptied "$@"', "--"]
+# `jj restack` to rebase the branches of the megamerge onto trunk(). It also rewrites the branches
+# that agents work on, so run it while they're idle.
+restack = ["rebase", "--onto", "trunk()", "--source", "roots(trunk()..megamerge())", "--simplify-parents", "--skip-emptied"]
 
 # `jj push-megamerge` to publish megamerge as main on my fork. Never push it with plain
 # git: jj doesn't see that push, and once the stack is rewritten, importing the stale
@@ -87,13 +78,9 @@ done
 ws-add = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" add "$@"', "--"]
 ws-remove = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" remove "$@"', "--"]
 
-# `jj seed` to rebuild the build directories that `jj ws-add` copies into new workspaces.
+# `jj seed` to move the default workspace onto trunk() and rebuild the build directories that
+# `jj ws-add` copies into new workspaces.
 seed = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" seed "$@"', "--"]
-
-# `jj sync` in a workspace to fetch and rebase copies of the stack onto trunk(), and `jj land` to
-# rebase the stack and move the content of the copies into it once their conflicts are resolved.
-sync = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" sync "$@"', "--"]
-land = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" land "$@"', "--"]
 
 # `jj clone <source> [<destination>] [<jj git clone option>...]` to clone into a btrfs subvolume,
 # which `jj ws-add` requires for the default workspace.

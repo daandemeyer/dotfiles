@@ -29,57 +29,44 @@ steps. Do not rewrite the finished commits into a different split.
 
 ## Jujutsu
 
-### Megamerge
+### Branches
 
-Check for a megamerge commit with `jj log -r 'megamerge()'`. If there is one,
-always work in a new commit on top of it (`jj new 'megamerge()'`), never in the
-commits below it.
+Do every task on its own branch, a series of commits on top of `trunk()`.
+Before the first change, run `jj log -r '@-'`. If the parent of the
+working-copy commit is the megamerge (`jj log -r 'megamerge()'`), move off it
+with `jj new 'trunk()'`. When the task continues an existing branch, start on
+top of its head with `jj new <head>` instead.
 
-Run builds, tests and other commands on top of the megamerge too. The only
-exception is checking whether an individual commit builds and passes all tests.
-For that, run `jj new <rev>`, run the checks, then return with
-`jj new 'megamerge()'`.
+The megamerge merges the branches of the user, so the user can build and test
+them together. Never start work on top of the megamerge, and never run
+`jj restack` or `jj push-megamerge`.
 
-### Rewriting shared commits
-
-The megamerge and every commit below it are shared with the user and the other
-workspaces. Run every command that rewrites one of them through `jj locked`,
-for example `jj locked absorb` or `jj locked squash --into <rev>`. `jj locked`
-runs the command while it holds a lock, so two workspaces never rewrite the
-stack at the same time. Two rewrites at the same time make the commits
-divergent. `jj stack`, `jj unstack`, `jj restack` and `jj land` take the lock
-by themselves.
-
-Never run `jj edit` on a shared commit. Every snapshot of the working copy
-would then rewrite it without the lock.
+Only rewrite the commits of your own branch. Never rewrite a commit of another
+branch, even when it shows up in `jj log`: the user or another agent works on
+it.
 
 ### Landing edits in existing commits
 
-Make the edits in the working-copy commit on top of the megamerge, then move
+Make the edits in the working-copy commit on top of your branch, then move
 them into the commits they belong to:
 
-1. `jj locked absorb` moves each hunk into the commit that last touched those
-   lines.
-2. For hunks absorb leaves behind, use `jj locked squash --into <rev>
-   [paths...]`. Squash moves whole files. Never use `--interactive`, it needs
-   a terminal.
+1. `jj absorb` moves each hunk into the commit that last touched those lines.
+2. For hunks absorb leaves behind, use `jj squash --into <rev> [paths...]`.
+   Squash moves whole files. Never use `--interactive`, it needs a terminal.
 
 Check `jj status` afterwards: the working-copy commit should end up empty.
 
 When a file's remaining hunks belong in different commits, split them first:
-`jj split` into several commits on top of the megamerge, then squash each one
+`jj split` into several commits on top of the branch, then squash each one
 into its target.
 
 ### New features
 
-Implement a new feature on top of the megamerge, one commit per step. After
-each step, `jj commit -m <message>` describes the working-copy commit and
-starts a new, empty one on top of it. Land fixes to earlier steps with absorb
-or squash as described above.
-
-When the feature is complete, run `jj stack 'megamerge()..@-'` to move the
-whole series below the megamerge as a new parent. `jj stack` starts a fresh
-working-copy commit on top of the megamerge afterwards.
+Implement a new feature one commit per step. After each step,
+`jj commit -m <message>` describes the working-copy commit and starts a new,
+empty one on top of it. Land fixes to earlier steps with absorb or squash as
+described above. When the feature is complete, tell the user the change ID of
+the head of the branch.
 
 ### Workspaces
 
@@ -89,19 +76,11 @@ workspace when the user archives the thread. Never create or remove a
 workspace yourself.
 
 You are in a workspace other than the default one when `jj workspace root`
-prints a different path than `jj workspace root --name default`. In that case:
-
-- Run every command from the workspace. Never edit files or run builds in the
-  default workspace or in another workspace: the user and other agents work
-  there.
-- Commits are shared through the repository. They show up in `jj log` in every
-  workspace without pushing.
-- Rewrite the megamerge or a commit below it only through `jj locked`, as
-  described under "Rewriting shared commits". Commits on top of the megamerge
-  that you created in this workspace are yours; rewrite them directly.
-- When another workspace rewrites a shared commit, jj rebases your
-  working-copy commit onto the rewritten one and updates the files in your
-  workspace. Files you didn't touch can change under you. Your own edits stay.
+prints a different path than `jj workspace root --name default`. In that case,
+run every command from the workspace. Never edit files or run builds in the
+default workspace or in another workspace: the user and other agents work
+there. Commits are shared through the repository. They show up in `jj log` in
+every workspace without pushing.
 
 The workspace is a btrfs snapshot of the default workspace. It contains every
 ignored file of the default workspace: `buck-out`, build directories and the
@@ -116,28 +95,20 @@ was removed when the workspace was created. Before the first build in a meson
 build directory, run `meson setup --reconfigure <dir>` (through `tine box --`
 in a tine project). It takes a few seconds and keeps every build output.
 
-### Syncing the stack
+### Rebasing onto the latest trunk
 
-Sync the stack only when the user asks, from your own workspace:
+Rebase your branch only when the user asks:
 
-    jj sync
+    jj git fetch
+    jj rebase --branch @ --onto 'trunk()' --skip-emptied
 
-`jj sync` fetches and creates copies of the commits between `trunk()` and the
-megamerge on top of the new `trunk()`, and moves your working copy onto the
-copy of the megamerge. It prints the change ID of the copy of the megamerge
-and lists the copies that have conflicts. The copies count as commits you
-created, and the other workspaces keep working on the original stack. Until
-`jj land`, `megamerge()` still resolves to the original megamerge, so use the
-change ID that `jj sync` printed wherever this skill says `megamerge()`.
+If your branch starts on another branch instead of on `trunk()`, ask the user
+first: the rebase would rewrite the other branch too.
 
-Resolve each conflict on top of the conflicted copy: `jj new <copy>`, fix the
-files, then `jj squash`. Then return with `jj new <copy of the megamerge>` and
-build and test it. When it builds and the tests pass, run `jj land`. It
-rebases the original stack onto the new `trunk()`, moves the content of the
-copies into it and abandons the copies. The commits of the other workspaces move along with the
-stack. If `jj land` reports that the stack changed after `jj sync`, run
-`jj sync --abort` and start over with `jj sync`. When `jj land` is done, tell
-the user to run `jj seed`.
+`jj log -r 'conflicts()'` lists the commits with conflicts. Resolve each one in
+order, oldest first: `jj new <rev>`, fix the files, then `jj squash` to move
+the resolution into the conflicted commit. Afterwards return to the head of
+your branch with `jj new <head>`, then build and test it.
 
 ## Commit messages
 
