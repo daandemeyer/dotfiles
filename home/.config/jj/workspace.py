@@ -642,10 +642,17 @@ def convert(args: argparse.Namespace) -> None:
     print(f"jj-workspace: counting the files in {root}", file=sys.stderr)
     total = count_entries(root)
     run("btrfs", "subvolume", "create", new)
+    marker = Path(tempfile.mkstemp(dir=root.parent, prefix=f".{root.name}.convert.")[1])
     try:
         # `cp -a` keeps the modification times. Without them, the next build in the subvolume
         # rebuilds every target.
         run_with_progress(["cp", "-av", "--reflink=always", f"{root}/.", f"{new}/"], "copying", total)
+        # The process check above only sees processes that run in the checkout. jj commands in other
+        # workspaces of the repository and git commands in its worktrees write into .jj and .git
+        # from outside. Their writes during the copy would be lost with the old directory.
+        changed = run("find", root, "-xdev", "(", "-newer", marker, "-o", "-cnewer", marker, ")", "-print", "-quit")
+        if changed:
+            fail(f"{changed.strip()} changed during the copy; run `jj convert` again when nothing writes to {root}")
         root.rename(old)
         try:
             new.rename(root)
@@ -655,6 +662,8 @@ def convert(args: argparse.Namespace) -> None:
     except BaseException:
         delete_subvolume(new)
         raise
+    finally:
+        marker.unlink()
     run_with_progress(["rm", "-rfv", str(old)], "deleting the old directory", total)
     print(f"jj-workspace: converted {root} to a btrfs subvolume", file=sys.stderr)
     if Path(os.environ.get("PWD", "/")).is_relative_to(root):
