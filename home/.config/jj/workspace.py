@@ -66,6 +66,16 @@ def workspace_root(name: str | None = None, repository: Path | None = None) -> P
     return Path(run(*command, *(["--name", name] if name else [])).strip()).resolve()
 
 
+def default_workspace_root() -> Path | None:
+    result = subprocess.run(
+        ["jj", "--ignore-working-copy", "workspace", "root", "--name", DEFAULT],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    return Path(result.stdout.strip()).resolve() if result.returncode == 0 else None
+
+
 def workspace_name(path: Path) -> str:
     for line in run("jj", "--ignore-working-copy", "-R", path, "workspace", "list", "-T", WORKSPACE_ROOTS).splitlines():
         name, _, root = line.partition("\t")
@@ -245,10 +255,15 @@ def relocate_meson_build_dirs(root: Path, dest: Path) -> None:
 
 
 def add(args: argparse.Namespace) -> None:
-    root = workspace_root(DEFAULT)
-    if not is_subvolume(root):
-        fail(f"{root} is not a btrfs subvolume. Run `jj convert {root}` to convert it.")
-    lock = lock_megamerge(root, fcntl.LOCK_SH)
+    root = default_workspace_root()
+    # Zed runs its create and remove commands in every repository, including git repositories
+    # without jj. Those get the git worktree that Zed creates without the commands.
+    if root is None:
+        if len(args.revision) != 1:
+            fail("a git worktree needs exactly one revision")
+        run("git", "worktree", "add", "--detach", "--", args.path, args.revision[0])
+        print(args.path.absolute())
+        return
     dest = args.path.absolute()
     if dest.exists() or dest.is_symlink():
         fail(f"{dest} already exists")
@@ -261,6 +276,15 @@ def add(args: argparse.Namespace) -> None:
 
     revisions = [word for revision in args.revision for word in ("--revision", revision)]
     colocate = ["--colocate"] if (root / ".git").is_dir() else []
+    if not is_subvolume(root):
+        warn(
+            f"{root} is not a btrfs subvolume, so the workspace starts without its build directories. "
+            f"Run `jj convert {root}` to convert it."
+        )
+        run("jj", "-R", root, "workspace", "add", "--name", name, *colocate, *revisions, dest)
+        print(dest)
+        return
+    lock = lock_megamerge(root, fcntl.LOCK_SH)
     run("jj", "-R", root, "workspace", "add", "--name", name, *colocate, *revisions, dest)
     metadata = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}."))
     try:
@@ -289,13 +313,14 @@ def add(args: argparse.Namespace) -> None:
 
 def remove(args: argparse.Namespace) -> None:
     path = args.path.resolve()
+    if not (path / ".jj").is_dir():
+        run("git", "worktree", "remove", *(["--force"] if args.force else []), "--", path)
+        return
     name = workspace_name(path)
     if name == DEFAULT:
         fail("refusing to remove the default workspace")
     if Path.cwd().resolve().is_relative_to(path):
         fail("cannot remove the current workspace; run this from another workspace")
-    if not is_subvolume(path):
-        fail(f"{path} is not a btrfs subvolume; remove it with `jj workspace remove {name}`")
     refuse_mounts(path)
     root = workspace_root(DEFAULT, path)
 
