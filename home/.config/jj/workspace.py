@@ -266,6 +266,16 @@ def relocate_meson_build_dirs(root: Path, dest: Path) -> None:
         )
 
 
+def current_revision(root: Path, revision: str) -> str:
+    # Zed resolves the commit of a new worktree before ws-add takes the lock. When `jj land` or
+    # another rewrite runs in between, the commit is hidden. Checking it out would make it and its
+    # ancestors visible again next to their rewritten versions.
+    hidden = run("jj", "--ignore-working-copy", "-R", root, "log", "--no-graph", "-r", revision, "-T", 'if(self.hidden(), change_id ++ "\\n")').split()
+    if len(hidden) == 1 and len(resolve(f"change_id({hidden[0]})")) == 1:
+        return f"change_id({hidden[0]})"
+    return revision
+
+
 def add(args: argparse.Namespace) -> None:
     root = default_workspace_root()
     # Zed runs its create and remove commands in every repository, including git repositories
@@ -301,6 +311,7 @@ def add(args: argparse.Namespace) -> None:
         print(dest)
         return
     lock = lock_megamerge(root, fcntl.LOCK_SH, ADD_LOCK_TIMEOUT)
+    revisions = [word for revision in args.revision for word in ("--revision", current_revision(root, revision))]
     run("jj", "-R", root, "workspace", "add", "--name", name, *colocate, *revisions, dest)
     metadata = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}."))
     try:
