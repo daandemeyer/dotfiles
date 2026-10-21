@@ -5,6 +5,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,11 @@ DEFAULT = "default"
 PROGRESS_WIDTH = 30
 CLONE_USAGE = "jj clone <source> [<destination>] [<jj git clone option>...]"
 SEED_REVSET = "coalesce(megamerge(), trunk())"
+SYNC_STATE = "sync.json"
+# `jj duplicate` prints one line for every commit: the original commit ID, then the change ID and
+# the commit ID of the copy.
+DUPLICATED = re.compile(r"^Duplicated ([0-9a-f]+) as ([k-z]+) ([0-9a-f]+)")
+COMMIT_LINE = '"  " ++ change_id.short() ++ " " ++ description.first_line() ++ "\\n"'
 # btrfs gives the root directory of every subvolume inode number 256.
 SUBVOLUME_ROOT_INODE = 256
 METADATA = (".jj", ".git")
@@ -146,15 +152,16 @@ def processes_in(path: Path, open_files: bool = False) -> list[str]:
     return processes
 
 
-def lock_seed(root: Path, operation: int) -> IO[str]:
+def lock_megamerge(root: Path, operation: int) -> IO[str]:
     # `jj ws-add` copies the build directories of the default workspace into the new workspace.
     # While `jj seed` runs its build commands, the build directories of the default workspace
-    # contain partially written outputs.
-    lock = (root / ".jj" / "seed.lock").open("a")
+    # contain partially written outputs. While `jj land` runs, the megamerge and the default
+    # workspace move to the synced stack in several jj operations.
+    lock = (root / ".jj" / "megamerge.lock").open("a")
     try:
         fcntl.flock(lock, operation | fcntl.LOCK_NB)
     except BlockingIOError:
-        warn("waiting for `jj seed` to finish")
+        warn("waiting for `jj seed` or `jj land` to finish")
         fcntl.flock(lock, operation)
     return lock
 
@@ -230,7 +237,7 @@ def add(args: argparse.Namespace) -> None:
     root = workspace_root(DEFAULT)
     if not is_subvolume(root):
         fail(f"{root} is not a btrfs subvolume. Run `jj convert {root}` to convert it.")
-    lock = lock_seed(root, fcntl.LOCK_SH)
+    lock = lock_megamerge(root, fcntl.LOCK_SH)
     dest = args.path.absolute()
     if dest.exists() or dest.is_symlink():
         fail(f"{dest} already exists")
@@ -339,15 +346,154 @@ def seed(args: argparse.Namespace) -> None:
     if run("jj", "log", "--no-graph", "-r", "@", "-T", 'if(empty && !description, "clean")') != "clean":
         fail("the working-copy commit of the default workspace isn't empty; move its changes first")
 
-    with lock_seed(root, fcntl.LOCK_EX):
-        subprocess.run(["jj", "git", "fetch"], check=True)
-        subprocess.run(["jj", "restack"], check=True)
+    conflicts = run("jj", "log", "--no-graph", "-r", f"conflicts() & ::({SEED_REVSET})", "-T", COMMIT_LINE)
+    if conflicts:
+        fail(f"the megamerge has conflicts:\n{conflicts}")
+
+    with lock_megamerge(root, fcntl.LOCK_EX):
         subprocess.run(["jj", "new", SEED_REVSET], check=True)
         for command in commands:
             print(f"jj-workspace: running {' '.join(command)}", file=sys.stderr)
             result = subprocess.run(command, cwd=root)
             if result.returncode != 0:
                 sys.exit(result.returncode)
+
+
+def resolve(revset: str, template: str = "commit_id") -> list[str]:
+    return run("jj", "log", "--no-graph", "-r", revset, "-T", f'{template} ++ "\\n"').split()
+
+
+def resolve_by_change(revset: str, template: str) -> dict[str, str]:
+    lines = run("jj", "log", "--no-graph", "-r", revset, "-T", f'change_id ++ " " ++ {template} ++ "\\n"')
+    return dict(line.split(" ", 1) for line in lines.splitlines())
+
+
+def sync_state_path() -> Path:
+    root = workspace_root()
+    if root == workspace_root(DEFAULT):
+        fail("run `jj sync` and `jj land` from a workspace other than the default one")
+    return root / ".jj" / SYNC_STATE
+
+
+def abort_sync(path: Path) -> None:
+    if not path.exists():
+        fail("no `jj sync` is in progress in this workspace")
+    state = json.loads(path.read_text())
+    copies = [copy for copy in state["copies"].values() if resolve(f"present({copy})")]
+    if copies:
+        run("jj", "abandon", *copies)
+    path.unlink()
+    subprocess.run(["jj", "new", "megamerge()"], check=True)
+    print("jj-workspace: abandoned the synced copies of the stack", file=sys.stderr)
+
+
+def sync(args: argparse.Namespace) -> None:
+    path = sync_state_path()
+    if args.abort:
+        abort_sync(path)
+        return
+    if path.exists():
+        fail("a `jj sync` is already in progress in this workspace; run `jj land` or `jj sync --abort`")
+
+    subprocess.run(["jj", "git", "fetch"], check=True)
+    if not resolve("parents(roots(trunk()..megamerge())) ~ trunk()"):
+        print("jj-workspace: the megamerge is already on trunk()", file=sys.stderr)
+        return
+    trunk = resolve("trunk()")[0]
+    originals = resolve_by_change("trunk()..megamerge()", "commit_id")
+    megamerge = resolve("megamerge()", "change_id")[0]
+
+    # The copies get new change IDs. The other workspaces keep working on the original stack until
+    # `jj land` moves their commits onto the copies.
+    result = subprocess.run(
+        ["jj", "duplicate", *originals.values(), "--onto", trunk],
+        check=True,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    by_commit = {commit: change for change, commit in originals.items()}
+    copies = {}
+    for line in result.stderr.splitlines():
+        match = DUPLICATED.match(line)
+        if not match:
+            continue
+        original = next(change for commit, change in by_commit.items() if commit.startswith(match[1]))
+        copies[original] = resolve(match[3], "change_id")[0]
+    if sorted(copies) != sorted(originals):
+        fail(f"could not map every commit to its copy in the output of `jj duplicate`:\n{result.stderr}")
+
+    # `jj restack` drops commits that became empty because trunk() already contains them. A merge
+    # commit like the megamerge is empty on its own, so a copy only counts as emptied when its
+    # original wasn't empty.
+    original_empty = resolve_by_change(" | ".join(originals.values()), "empty")
+    copy_empty = resolve_by_change(" | ".join(copies.values()), "empty")
+    emptied = [
+        copy
+        for original, copy in copies.items()
+        if original_empty[original] == "false" and copy_empty[copy] == "true"
+    ]
+    if emptied:
+        run("jj", "abandon", *emptied)
+        copies = {original: copy for original, copy in copies.items() if copy not in emptied}
+    run("jj", "simplify-parents", "-r", " | ".join(copies.values()))
+    subprocess.run(["jj", "new", copies[megamerge]], check=True)
+
+    path.write_text(
+        json.dumps({"trunk": trunk, "megamerge": megamerge, "originals": originals, "copies": copies})
+    )
+    conflicts = run("jj", "log", "--no-graph", "-r", f"conflicts() & ({' | '.join(copies.values())})", "-T", COMMIT_LINE)
+    if conflicts:
+        print(f"jj-workspace: resolve the conflicts in the copies, then run `jj land`:\n{conflicts}", file=sys.stderr)
+    else:
+        print("jj-workspace: the copies have no conflicts; build them, then run `jj land`", file=sys.stderr)
+
+
+def land(args: argparse.Namespace) -> None:
+    path = sync_state_path()
+    if not path.exists():
+        fail("no `jj sync` is in progress in this workspace")
+    state = json.loads(path.read_text())
+    originals, copies = state["originals"], state["copies"]
+    root = workspace_root(DEFAULT)
+
+    with lock_megamerge(root, fcntl.LOCK_EX):
+        changed = [change for change, commit in originals.items() if resolve(f"present({change})") != [commit]]
+        if changed or resolve("megamerge()", "change_id") != [state["megamerge"]]:
+            fail(
+                "the stack changed after `jj sync`; run `jj sync --abort` and `jj sync` again:\n"
+                + "\n".join(f"  {change}" for change in changed)
+            )
+        missing = [copy for copy in copies.values() if len(resolve(f"present({copy})")) != 1]
+        if missing:
+            fail("some copies are missing or divergent:\n" + "\n".join(f"  {copy}" for copy in missing))
+        conflicts = run("jj", "log", "--no-graph", "-r", f"conflicts() & ({' | '.join(copies.values())})", "-T", COMMIT_LINE)
+        if conflicts:
+            fail(f"the copies still have conflicts:\n{conflicts}")
+
+        stack = " | ".join(originals.values())
+        for change, commit in originals.items():
+            # `jj sync` abandons a copy that became empty. The bookmarks of its original and the
+            # commits on top of it move to the copy of the nearest ancestor that still has a copy,
+            # or to trunk() when no ancestor has one. `jj log` lists the nearest ancestor first.
+            ancestors = resolve(f"::{commit} & ({stack})", "change_id")
+            target = next((copies[a] for a in ancestors if a in copies), state["trunk"])
+            bookmarks = resolve(commit, 'local_bookmarks.map(|b| b.name()).join("\\n")')
+            if bookmarks:
+                run("jj", "bookmark", "set", *bookmarks, "-r", target, "--allow-backwards")
+            descendants = f"children({commit}) ~ ({stack})"
+            if resolve(descendants):
+                run("jj", "rebase", "-s", descendants, "-o", target)
+        run("jj", "abandon", *originals.values())
+        path.unlink()
+
+        subprocess.run(["jj", "-R", str(root), "workspace", "update-stale"], check=True)
+        divergent = run("jj", "log", "--no-graph", "-r", "divergent()", "-T", COMMIT_LINE)
+        if divergent:
+            warn(f"some changes are divergent after `jj land`:\n{divergent}")
+        conflicts = run("jj", "log", "--no-graph", "-r", "conflicts() & mutable()", "-T", COMMIT_LINE)
+        if conflicts:
+            warn(f"rebasing onto the synced stack created conflicts:\n{conflicts}")
+    print("jj-workspace: landed the synced stack; run `jj seed` in the default workspace", file=sys.stderr)
 
 
 def clone_destination(source: str) -> str:
@@ -479,9 +625,14 @@ def main() -> None:
     remove_parser.add_argument("path", type=Path)
     remove_parser.set_defaults(func=remove)
     seed_parser = commands.add_parser(
-        "seed", help="update the default workspace and build it for new workspaces to copy"
+        "seed", help="move the default workspace onto the megamerge and build it for new workspaces"
     )
     seed_parser.set_defaults(func=seed)
+    sync_parser = commands.add_parser("sync", help="fetch and rebase copies of the stack onto trunk()")
+    sync_parser.add_argument("--abort", action="store_true", help="abandon the copies of an earlier sync")
+    sync_parser.set_defaults(func=sync)
+    land_parser = commands.add_parser("land", help="replace the stack with the copies from `jj sync`")
+    land_parser.set_defaults(func=land)
     clone_parser = commands.add_parser(
         "clone",
         help="clone a repository into a new btrfs subvolume",
