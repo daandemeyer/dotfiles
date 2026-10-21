@@ -13,7 +13,8 @@
     "bindings": {
       "ctrl-t": "tab_switcher::Toggle",
       "ctrl-shift-w": "pane::CloseActiveItem",
-      "ctrl-r": "projects::OpenRecent"
+      "ctrl-r": "projects::OpenRecent",
+      "ctrl-b": "workspace::ToggleLeftDock"
     }
   }
 ]
