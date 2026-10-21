@@ -100,6 +100,25 @@ The user updates the build directories of the default workspace with
 `build.ninja`, run `meson setup --reconfigure <dir>` (through `tine box --` in
 a tine project) before building.
 
+### Syncing the stack
+
+Sync the stack only when the user asks, from your own workspace:
+
+    jj sync
+
+`jj sync` fetches and creates copies of the commits between `trunk()` and the
+megamerge on top of the new `trunk()`, and moves your working copy onto the
+copy of the megamerge. It lists the copies that have conflicts. The copies
+count as commits you created, and the other workspaces keep working on the
+original stack.
+
+Resolve each conflict on top of the conflicted copy: `jj new <copy>`, fix the
+files, then `jj squash`. Then return with `jj new <copy of the megamerge>` and
+build and test it. When it builds and the tests pass, run `jj land`. It moves
+the bookmarks and the commits of every other workspace onto the copies and
+abandons the original stack. If `jj land` reports that the stack changed after
+`jj sync`, run `jj sync --abort` and start over with `jj sync`.
+
 ## Commit messages
 
 Before writing, learn the project's style. Read its contribution guidelines,
