@@ -87,7 +87,7 @@ ws-remove = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config p
 seed = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" seed "$@"', "--"]
 
 # `jj sync` in a workspace to fetch and rebase copies of the stack onto trunk(), and `jj land` to
-# replace the stack with the copies once their conflicts are resolved.
+# rebase the stack and move the content of the copies into it once their conflicts are resolved.
 sync = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" sync "$@"', "--"]
 land = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" land "$@"', "--"]
 

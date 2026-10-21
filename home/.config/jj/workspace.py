@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import IO, NoReturn
@@ -408,11 +409,11 @@ def seed(args: argparse.Namespace) -> None:
 
 
 def resolve(revset: str, template: str = "commit_id") -> list[str]:
-    return run("jj", "log", "--no-graph", "-r", revset, "-T", f'{template} ++ "\\n"').split()
+    return run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", revset, "-T", f'{template} ++ "\\n"').split()
 
 
 def resolve_by_change(revset: str, template: str) -> dict[str, str]:
-    lines = run("jj", "log", "--no-graph", "-r", revset, "-T", f'change_id ++ " " ++ {template} ++ "\\n"')
+    lines = run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", revset, "-T", f'change_id ++ " " ++ {template} ++ "\\n"')
     return dict(line.split(" ", 1) for line in lines.splitlines())
 
 
@@ -521,52 +522,101 @@ def sync(args: argparse.Namespace) -> None:
         print(f"jj-workspace: {copy}. The copies have no conflicts; build them, then run `jj land`", file=sys.stderr)
 
 
+def workspace_roots(root: Path) -> list[Path]:
+    roots = []
+    for line in run("jj", "--ignore-working-copy", "-R", root, "workspace", "list", "-T", WORKSPACE_ROOTS).splitlines():
+        _, _, path = line.partition("\t")
+        if path and (Path(path) / ".jj").is_dir():
+            roots.append(Path(path).resolve())
+    return roots
+
+
+def snapshot(workspace: Path) -> None:
+    result = subprocess.run(["jj", "-R", workspace, "util", "snapshot"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if result.returncode != 0:
+        # `jj util snapshot` refuses a stale workspace. `jj workspace update-stale` records its
+        # changes before it checks out the rewritten working-copy commit.
+        run("jj", "-R", workspace, "workspace", "update-stale")
+
+
+def revert_operations(token: str) -> None:
+    # Other workspaces can run jj commands while `jj land` runs. Restoring the operation from before
+    # `jj land` would discard their operations, so only the operations of `jj land` are reverted.
+    log = run("jj", "--ignore-working-copy", "op", "log", "-n", "500", "--no-graph", "-T", 'self.id() ++ " " ++ self.attributes() ++ "\n"')
+    for line in log.splitlines():
+        if f"jj-workspace.land={token}" in line:
+            run("jj", "--ignore-working-copy", "op", "revert", line.split()[0])
+
+
 def land(args: argparse.Namespace) -> None:
     root, name = sync_workspace()
     path = sync_state_path(root, name)
     if not path.exists():
         fail("no `jj sync` is in progress in this workspace")
     state = json.loads(path.read_text())
-    originals, copies = state["originals"], state["copies"]
+    trunk, megamerge, originals, copies = state["trunk"], state["megamerge"], state["originals"], state["copies"]
 
     with lock_megamerge(root, fcntl.LOCK_EX):
-        changed = [change for change, commit in originals.items() if resolve(f"present({change})") != [commit]]
-        if changed or resolve("megamerge()", "change_id") != [state["megamerge"]]:
-            fail(
-                "the stack changed after `jj sync`; run `jj sync --abort` and `jj sync` again:\n"
-                + "\n".join(f"  {change}" for change in changed)
-            )
-        missing = [copy for copy in copies.values() if len(resolve(f"present({copy})")) != 1]
-        if missing:
-            fail("some copies are missing or divergent:\n" + "\n".join(f"  {copy}" for copy in missing))
-        conflicts = run("jj", "log", "--no-graph", "-r", f"conflicts() & ({' | '.join(copies.values())})", "-T", COMMIT_LINE)
+        # `jj land` rewrites the working-copy commits of other workspaces without updating their
+        # files. Changes that jj hasn't recorded yet would end up in a divergent commit on the old
+        # stack.
+        workspaces = workspace_roots(root)
+        for workspace in workspaces:
+            snapshot(workspace)
+
+        current = run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", change_ids(originals), "-T", 'change_id ++ " " ++ commit_id ++ "\n"')
+        if sorted(current.splitlines()) != sorted(f"{change} {commit}" for change, commit in originals.items()):
+            fail("the stack changed after `jj sync`; run `jj sync --abort` and `jj sync` again")
+        found = resolve(change_ids(copies.values()), "change_id")
+        if sorted(found) != sorted(copies.values()):
+            fail("some copies are missing or divergent; run `jj sync --abort` and `jj sync` again")
+        conflicts = run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", f"conflicts() & ({change_ids(copies.values())})", "-T", COMMIT_LINE)
         if conflicts:
             fail(f"the copies still have conflicts:\n{conflicts}")
 
-        stack = " | ".join(originals.values())
-        for change, commit in originals.items():
-            # `jj sync` abandons a copy that became empty. The bookmarks of its original and the
-            # commits on top of it move to the copy of the nearest ancestor that still has a copy,
-            # or to trunk() when no ancestor has one. `jj log` lists the nearest ancestor first.
-            ancestors = resolve(f"::{commit} & ({stack})", "change_id")
-            target = next((copies[a] for a in ancestors if a in copies), state["trunk"])
-            bookmarks = resolve(commit, 'local_bookmarks.map(|b| b.name()).join("\\n")')
-            if bookmarks:
-                run("jj", "bookmark", "set", *bookmarks, "-r", target, "--allow-backwards")
-            descendants = f"children({commit}) ~ ({stack})"
-            if resolve(descendants):
-                run("jj", "rebase", "-s", descendants, "-o", target)
-        run("jj", "abandon", *originals.values())
+        # jj records the arguments of every command in its operation. The token finds the
+        # operations of this `jj land` again if one of them fails.
+        token = uuid.uuid4().hex
+        tagged = ("jj", "--ignore-working-copy", "--config", f"jj-workspace.land={token}")
+        try:
+            # These are the options of `jj restack`. The original stack keeps its change IDs, and jj
+            # moves bookmarks and every commit on top of the stack along with it.
+            roots = f"roots({change_ids(originals)})"
+            run(*tagged, "rebase", "-s", roots, "-o", trunk, "--skip-emptied", "--simplify-parents")
+            remaining = set(resolve(change_ids(originals), "change_id"))
+            for original, copy in copies.items():
+                if original not in remaining:
+                    fail(f"`jj rebase` abandoned {original} as empty, but its copy {copy} isn't empty")
+                run(*tagged, "restore", "--from", f"change_id({copy})", "--into", f"change_id({original})")
+            # `jj sync` drops the copies that its rebase abandoned as empty. When the rebase above
+            # keeps the original of a dropped copy, land abandons that original.
+            emptied = [original for original in remaining if original not in copies]
+            if emptied:
+                run(*tagged, "abandon", change_ids(emptied))
+            for original, copy in copies.items():
+                if run("jj", "--ignore-working-copy", "diff", "--from", f"change_id({copy})", "--to", f"change_id({original})", "--name-only"):
+                    fail(f"{original} doesn't have the content of its copy {copy} after `jj land`")
+            run(*tagged, "abandon", change_ids(copies.values()))
+        except BaseException:
+            revert_operations(token)
+            raise
         path.unlink()
 
-        subprocess.run(["jj", "-R", str(root), "workspace", "update-stale"], check=True)
-        divergent = run("jj", "log", "--no-graph", "-r", "divergent()", "-T", COMMIT_LINE)
+        for workspace in workspaces:
+            run("jj", "-R", workspace, "workspace", "update-stale")
+        target = f"change_id({megamerge})" if resolve(f"change_id({megamerge})") else trunk
+        subprocess.run(["jj", "new", target], check=True)
+        divergent = run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", "divergent()", "-T", COMMIT_LINE)
         if divergent:
             warn(f"some changes are divergent after `jj land`:\n{divergent}")
-        conflicts = run("jj", "log", "--no-graph", "-r", "conflicts() & mutable()", "-T", COMMIT_LINE)
+        conflicts = run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", "conflicts() & mutable()", "-T", COMMIT_LINE)
         if conflicts:
             warn(f"rebasing onto the synced stack created conflicts:\n{conflicts}")
-    print("jj-workspace: landed the synced stack; run `jj seed` in the default workspace", file=sys.stderr)
+    print(
+        "jj-workspace: landed the synced stack. The build directories of the default workspace are "
+        "built from the old megamerge until `jj seed` runs in it.",
+        file=sys.stderr,
+    )
 
 
 def clone_destination(source: str) -> str:
