@@ -2,6 +2,7 @@
 """Keep jj checkouts on btrfs subvolumes and manage workspaces that are snapshots of them."""
 
 import argparse
+import ctypes
 import fcntl
 import json
 import os
@@ -31,6 +32,11 @@ DUPLICATED = re.compile(r"^Duplicated ([0-9a-f]+) as ([k-z]+) ")
 COMMIT_LINE = '"  " ++ change_id.short() ++ " " ++ description.first_line() ++ "\\n"'
 # btrfs gives the root directory of every subvolume inode number 256.
 SUBVOLUME_ROOT_INODE = 256
+BTRFS_SUPER_MAGIC = 0x9123683E
+BTRFS_IOC_SNAP_CREATE_V2 = 0x50009417
+BTRFS_IOC_SUBVOL_CREATE_V2 = 0x50009418
+BTRFS_IOC_SNAP_DESTROY_V2 = 0x5000943F
+BTRFS_SUBVOL_NAME_MAX = 4039
 METADATA = (".jj", ".git")
 # Zed saves the files of a worktree in a commit under this namespace before it removes the
 # worktree. Restoring the archived thread writes the files from that commit into a new worktree.
@@ -60,9 +66,61 @@ def warn(message: str) -> None:
     print(f"jj-workspace: {message}", file=sys.stderr)
 
 
+class btrfs_ioctl_vol_args_v2(ctypes.Structure):
+    _fields_ = [
+        ("fd", ctypes.c_int64),
+        ("transid", ctypes.c_uint64),
+        ("flags", ctypes.c_uint64),
+        ("unused", ctypes.c_uint64 * 4),
+        ("name", ctypes.c_char * (BTRFS_SUBVOL_NAME_MAX + 1)),
+    ]
+
+
+libc = ctypes.CDLL(None, use_errno=True)
+libc.statfs.argtypes = (ctypes.c_char_p, ctypes.c_void_p)
+libc.ioctl.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p)
+
+
+def is_btrfs(path: Path) -> bool:
+    # struct statfs is 120 bytes on x86-64, which is 15 longs. f_type is its first field and has
+    # type long, so an array of 15 longs stands in for the struct.
+    buffer = (ctypes.c_long * 15)()
+    if libc.statfs(os.fsencode(path), ctypes.byref(buffer)) < 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), str(path))
+    return buffer[0] == BTRFS_SUPER_MAGIC
+
+
 def is_subvolume(path: Path) -> bool:
-    filesystem = run("stat", "--file-system", "--format=%T", path).strip()
-    return filesystem == "btrfs" and path.stat().st_ino == SUBVOLUME_ROOT_INODE
+    return is_btrfs(path) and path.stat().st_ino == SUBVOLUME_ROOT_INODE
+
+
+def subvolume_ioctl(path: Path, request: int, source: int = 0) -> None:
+    # The btrfs subvolume ioctls don't take a path. They take a file descriptor of the parent
+    # directory and the name of the subvolume inside that directory.
+    name = os.fsencode(path.name)
+    if not name or len(name) > BTRFS_SUBVOL_NAME_MAX:
+        raise ValueError(f"{path} isn't a valid subvolume path")
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        args = btrfs_ioctl_vol_args_v2(fd=source, name=name)
+        if libc.ioctl(parent, request, ctypes.byref(args)) < 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code), str(path))
+    finally:
+        os.close(parent)
+
+
+def create_subvolume(path: Path) -> None:
+    subvolume_ioctl(path, BTRFS_IOC_SUBVOL_CREATE_V2)
+
+
+def snapshot_subvolume(source: Path, dest: Path) -> None:
+    fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        subvolume_ioctl(dest, BTRFS_IOC_SNAP_CREATE_V2, fd)
+    finally:
+        os.close(fd)
 
 
 def workspace_root(name: str | None = None, repository: Path | None = None) -> Path:
@@ -108,15 +166,14 @@ def refuse_mounts(path: Path) -> None:
 
 
 def delete_subvolume(path: Path) -> None:
-    # An unprivileged user can only run `btrfs subvolume delete` on a filesystem mounted with
-    # user_subvol_rm_allowed. On other mounts, the command fails with EPERM. shutil.rmtree()
-    # still works on those mounts, because rmdir() can remove an empty subvolume.
-    result = subprocess.run(
-        ["btrfs", "subvolume", "delete", str(path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    if result.returncode != 0:
+    # An unprivileged user can only delete a subvolume on a filesystem mounted with
+    # user_subvol_rm_allowed. On other mounts, the ioctl fails with EPERM. shutil.rmtree() still
+    # works on those mounts, because rmdir() can remove an empty subvolume. The ioctl also fails
+    # with EINVAL on a plain directory. ws-add passes a plain directory when it fails before it
+    # takes the snapshot.
+    try:
+        subvolume_ioctl(path, BTRFS_IOC_SNAP_DESTROY_V2)
+    except OSError:
         shutil.rmtree(path)
 
 
@@ -216,7 +273,7 @@ def graft(root: Path, dest: Path, metadata: Path) -> None:
         if (dest / entry).exists():
             shutil.move(dest / entry, metadata / entry)
     shutil.rmtree(dest)
-    run("btrfs", "subvolume", "snapshot", root, dest)
+    snapshot_subvolume(root, dest)
     for entry in METADATA:
         remove_entry(dest / entry)
         if (metadata / entry).exists():
@@ -636,10 +693,10 @@ def clone(args: argparse.Namespace) -> None:
     if dest.exists() or dest.is_symlink():
         fail(f"{dest} already exists")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if run("stat", "--file-system", "--format=%T", dest.parent).strip() != "btrfs":
+    if not is_btrfs(dest.parent):
         fail(f"{dest.parent} is not on a btrfs filesystem")
 
-    run("btrfs", "subvolume", "create", dest)
+    create_subvolume(dest)
     result = subprocess.run(["jj", "git", "clone", *options, source, str(dest)])
     if result.returncode != 0:
         delete_subvolume(dest)
@@ -699,7 +756,7 @@ def convert(args: argparse.Namespace) -> None:
     if is_subvolume(root):
         print(f"jj-workspace: {root} is already a btrfs subvolume", file=sys.stderr)
         return
-    if run("stat", "--file-system", "--format=%T", root).strip() != "btrfs":
+    if not is_btrfs(root):
         fail(f"{root} is not on a btrfs filesystem")
     refuse_mounts(root)
     # A build or an editor that writes into the checkout during the copy writes into the old
@@ -715,7 +772,7 @@ def convert(args: argparse.Namespace) -> None:
             fail(f"{path} already exists")
     print(f"jj-workspace: counting the files in {root}", file=sys.stderr)
     total = count_entries(root)
-    run("btrfs", "subvolume", "create", new)
+    create_subvolume(new)
     marker = Path(tempfile.mkstemp(dir=root.parent, prefix=f".{root.name}.convert.")[1])
     try:
         # `cp -a` keeps the modification times. Without them, the next build in the subvolume
