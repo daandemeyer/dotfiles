@@ -77,6 +77,25 @@ def worktrees_directory(root: Path) -> Path:
     return root.parent / "worktrees"
 
 
+def mounts_under(path: Path) -> list[Path]:
+    mounts = []
+    for line in Path("/proc/self/mountinfo").read_text().splitlines():
+        # The mount point is the fifth field. The kernel escapes spaces and other special characters
+        # in it as octal sequences like \040.
+        point = Path(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), line.split()[4]))
+        if point != path and point.is_relative_to(path):
+            mounts.append(point)
+    return mounts
+
+
+def refuse_mounts(path: Path) -> None:
+    # `cp -a`, `rm -r` and shutil.rmtree() descend into mounts. Deleting a directory with a mount
+    # inside it deletes the files of the mounted filesystem too.
+    mounts = mounts_under(path)
+    if mounts:
+        fail(f"{path} contains mounts, unmount them first: {', '.join(map(str, mounts))}")
+
+
 def delete_subvolume(path: Path) -> None:
     # An unprivileged user can only run `btrfs subvolume delete` on a filesystem mounted with
     # user_subvol_rm_allowed. On other mounts, the command fails with EPERM. shutil.rmtree()
@@ -289,6 +308,7 @@ def remove(args: argparse.Namespace) -> None:
         fail("cannot remove the current workspace; run this from another workspace")
     if not is_subvolume(path):
         fail(f"{path} is not a btrfs subvolume; remove it with `jj workspace remove {name}`")
+    refuse_mounts(path)
     root = workspace_root(DEFAULT, path)
 
     # A rewrite in another workspace, like `jj land`, leaves the workspace stale, and `jj util snapshot`
@@ -588,6 +608,7 @@ def convert(args: argparse.Namespace) -> None:
         return
     if run("stat", "--file-system", "--format=%T", root).strip() != "btrfs":
         fail(f"{root} is not on a btrfs filesystem")
+    refuse_mounts(root)
     # A build or an editor that writes into the checkout during the copy writes into the old
     # directory. The old directory is deleted after the copy, and the writes are lost.
     processes = processes_in(root, open_files=True)
@@ -662,6 +683,8 @@ def main() -> None:
         args.func(args)
     except subprocess.CalledProcessError as error:
         sys.exit(error.returncode)
+    except OSError as error:
+        fail(str(error))
 
 
 if __name__ == "__main__":
