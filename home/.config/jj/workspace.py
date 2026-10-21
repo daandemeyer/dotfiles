@@ -240,7 +240,9 @@ def lock_megamerge(root: Path, operation: int, timeout: float | None = None) -> 
     # `jj ws-add` copies the build directories of the default workspace into the new workspace.
     # While `jj seed` runs its build commands, the build directories of the default workspace
     # contain partially written outputs. While `jj land` runs, the megamerge and the default
-    # workspace move to the synced stack in several jj operations.
+    # workspace move to the synced stack in several jj operations. jj runs concurrent commands
+    # without a lock. Two commands that rewrite the stack at the same time both rebase the
+    # megamerge, and the megamerge becomes divergent. `jj locked` runs them one at a time.
     lock = (root / ".jj" / "megamerge.lock").open("a")
     deadline = None if timeout is None else time.monotonic() + timeout
     waiting = False
@@ -250,9 +252,9 @@ def lock_megamerge(root: Path, operation: int, timeout: float | None = None) -> 
             return lock
         except BlockingIOError:
             if deadline is not None and time.monotonic() > deadline:
-                fail(f"`jj seed` or `jj land` still runs in {root}; try again when it's done")
+                fail(f"another jj command still rewrites the stack of {root}; try again when it's done")
             if not waiting:
-                warn("waiting for `jj seed` or `jj land` to finish")
+                warn("waiting for another jj command that rewrites the stack to finish")
                 waiting = True
             time.sleep(0.2)
 
@@ -676,6 +678,63 @@ def land(args: argparse.Namespace) -> None:
     )
 
 
+def report_rewrite_problems() -> None:
+    divergent = run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", "divergent()", "-T", COMMIT_LINE)
+    if divergent:
+        warn(f"some changes are divergent:\n{divergent}")
+    conflicts = run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", "conflicts() & mutable()", "-T", COMMIT_LINE)
+    if conflicts:
+        warn(f"some commits have conflicts:\n{conflicts}")
+
+
+def rewrite_stack(commands: list[list[str]]) -> int:
+    root = default_workspace_root()
+    if root is None:
+        fail("not in a jj repository")
+    current = workspace_root()
+    with lock_megamerge(root, fcntl.LOCK_EX):
+        # A rewrite of a commit below the megamerge rebases the working-copy commit of every
+        # workspace. A workspace can have edits that jj hasn't recorded yet. When two or more
+        # operations happen before the next jj command in that workspace, jj keeps the rebased
+        # working-copy commit and a second commit with the edits, and the change is divergent.
+        # Recording the edits before the rewrite and updating the workspace right after the
+        # rewrite avoids that.
+        workspaces = workspace_roots(root)
+        for workspace in workspaces:
+            snapshot(workspace)
+        returncode = 0
+        for command in commands:
+            returncode = subprocess.run(command).returncode
+            if returncode != 0:
+                break
+        for workspace in workspaces:
+            if workspace != current:
+                subprocess.run(
+                    ["jj", "-R", workspace, "workspace", "update-stale"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        report_rewrite_problems()
+    return returncode
+
+
+def locked(args: argparse.Namespace) -> None:
+    if not args.command:
+        fail("usage: jj locked <jj command> [<argument>...]")
+    sys.exit(rewrite_stack([["jj", *args.command]]))
+
+
+def stack(args: argparse.Namespace) -> None:
+    revisions = [word for revision in args.revisions for word in ("--revision", revision)]
+    rebase = ["jj", "rebase", "--after", "trunk()", "--before", "megamerge()", *revisions, "--simplify-parents"]
+    returncode = rewrite_stack([rebase])
+    if returncode != 0:
+        sys.exit(returncode)
+    # `jj stack @` moves the working-copy commit below the megamerge, so a new one starts on top.
+    if not resolve("@ & megamerge()+"):
+        subprocess.run(["jj", "new", "megamerge()"], check=True)
+
+
 def clone_destination(source: str) -> str:
     # `jj git clone` names the clone after the last component of the source. The source can be a
     # path, a URL or an scp-like address such as `git@github.com:systemd/systemd.git`.
@@ -824,6 +883,16 @@ def main() -> None:
     sync_parser.set_defaults(func=sync)
     land_parser = commands.add_parser("land", help="replace the stack with the copies from `jj sync`")
     land_parser.set_defaults(func=land)
+    locked_parser = commands.add_parser(
+        "locked",
+        help="run a jj command that rewrites the stack while holding the megamerge lock",
+        usage="jj locked <jj command> [<argument>...]",
+    )
+    locked_parser.add_argument("command", nargs=argparse.REMAINDER)
+    locked_parser.set_defaults(func=locked)
+    stack_parser = commands.add_parser("stack", help="move commits below the megamerge as new parents")
+    stack_parser.add_argument("revisions", nargs="+", help="revsets of the commits to move")
+    stack_parser.set_defaults(func=stack)
     clone_parser = commands.add_parser(
         "clone",
         help="clone a repository into a new btrfs subvolume",

@@ -29,21 +29,25 @@ git-push = 'remote_bookmarks(remote=exact:remote)..@ ~ megamerge()'
 'stack(x)' = 'stack(x, 2)'
 'stack(x, n)' = 'ancestors(reachable(x, mutable()), n)'
 
+[snapshot]
+# A command that rewrites a commit below the megamerge rebases the working-copy commits of every
+# other workspace. Without this setting, the next jj command in those workspaces fails until
+# `jj workspace update-stale` runs.
+auto-update-stale = true
+
 [aliases]
-# `jj stack <revset>` to include specific revs
-stack = ["util", "exec", "--", "bash", "-c", '''
-set -euo pipefail
-jj rebase --after "trunk()" --before "megamerge()" --revision "$@" --simplify-parents
-# `jj stack @` moves the working-copy commit below megamerge, so start a new one on top.
-if [ -z "$(jj log --no-graph -r '@ & megamerge()+' -T 'change_id')" ]; then
-    jj new "megamerge()"
-fi
-''', "--"]
+# `jj locked <jj command> [<argument>...]` to run a jj command that rewrites commits below the
+# megamerge. It holds the megamerge lock, so two workspaces can't rewrite the stack at the same
+# time.
+locked = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" locked "$@"', "--"]
 
-# `jj unstack <revset>` to remove specific revs
-unstack = ["rebase", "--onto", "trunk()", "--revision"]
+# `jj stack <revset>...` to move commits below the megamerge as new parents of it
+stack = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" stack "$@"', "--"]
 
-restack = ["rebase", "--onto", "trunk()", "--source", "roots(trunk()..) & stack()", "--simplify-parents", "--skip-emptied"]
+# `jj unstack <revset>` to move commits out from below the megamerge
+unstack = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" locked rebase --onto "trunk()" --revision "$@"', "--"]
+
+restack = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/workspace.py" locked rebase --onto "trunk()" --source "roots(trunk()..) & stack()" --simplify-parents --skip-emptied "$@"', "--"]
 
 # `jj push-megamerge` to publish megamerge as main on my fork. Never push it with plain
 # git: jj doesn't see that push, and once the stack is rewritten, importing the stale
