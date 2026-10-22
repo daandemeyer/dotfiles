@@ -3,7 +3,6 @@
 
 import argparse
 import ctypes
-import fcntl
 import json
 import os
 import re
@@ -11,15 +10,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
-from typing import IO, NoReturn
+from typing import NoReturn
 
 DEFAULT = "default"
-PROGRESS_WIDTH = 30
-# Zed runs the create command as a job of the repository's git job queue, and every later git job
-# of the repository waits for it. ws-add doesn't wait for a whole `jj seed` build.
-ADD_LOCK_TIMEOUT = 60
 # btrfs gives the root directory of every subvolume inode number 256.
 SUBVOLUME_ROOT_INODE = 256
 BTRFS_SUPER_MAGIC = 0x9123683E
@@ -28,24 +22,27 @@ BTRFS_IOC_SUBVOL_CREATE_V2 = 0x50009418
 BTRFS_IOC_SNAP_DESTROY_V2 = 0x5000943F
 BTRFS_SUBVOL_NAME_MAX = 4039
 METADATA = (".jj", ".git")
-# Zed saves the files of a worktree in a commit under this namespace before it removes the
-# worktree. Restoring the archived thread writes the files from that commit into a new worktree.
-ZED_ARCHIVE_REFS = "refs/archived-worktrees/"
 # Zed's worktree picker offers to force delete a worktree when the error of the remove command
 # contains the error that `git worktree remove` prints for a worktree with changes.
 DIRTY_WORKTREE = "contains modified or untracked files, use --force to delete it"
 # `jj util snapshot` only warns about new files that are larger than snapshot.max-new-file-size or
 # that snapshot.auto-track doesn't match, and leaves them out of the snapshot. ws-remove deletes
 # every file of the workspace afterwards, so its snapshot has to include those files too.
-SNAPSHOT_EVERY_FILE = ("--config", "snapshot.max-new-file-size=1TiB", "--config", 'snapshot.auto-track="all()"')
+# `jj util snapshot` also refuses to run in a stale workspace unless snapshot.auto-update-stale is
+# set.
+SNAPSHOT_EVERY_FILE = (
+    "--config",
+    "snapshot.max-new-file-size=1TiB",
+    "--config",
+    'snapshot.auto-track="all()"',
+    "--config",
+    "snapshot.auto-update-stale=true",
+)
 WORKSPACE_ROOTS = 'self.name() ++ "\\t" ++ self.root() ++ "\\n"'
-WORKING_COPY = 'commit_id ++ " " ++ empty ++ " " ++ if(description, "described", "undescribed")'
 
 
-def run(*args: str | Path, cwd: Path | None = None) -> str:
-    return subprocess.run(
-        [str(arg) for arg in args], check=True, stdout=subprocess.PIPE, text=True, cwd=cwd
-    ).stdout
+def run(*args: str | Path) -> str:
+    return subprocess.run([str(arg) for arg in args], check=True, stdout=subprocess.PIPE, text=True).stdout
 
 
 def fail(message: str) -> NoReturn:
@@ -148,8 +145,8 @@ def mounts_under(path: Path) -> list[Path]:
 
 
 def refuse_mounts(path: Path) -> None:
-    # `cp -a`, `rm -r` and shutil.rmtree() descend into mounts. Deleting a directory with a mount
-    # inside it deletes the files of the mounted filesystem too.
+    # shutil.rmtree() descends into mounts. Deleting a directory with a mount inside it deletes the
+    # files of the mounted filesystem too.
     mounts = mounts_under(path)
     if mounts:
         fail(f"{path} contains mounts, unmount them first: {', '.join(map(str, mounts))}")
@@ -165,86 +162,6 @@ def delete_subvolume(path: Path) -> None:
         subvolume_ioctl(path, BTRFS_IOC_SNAP_DESTROY_V2)
     except OSError:
         shutil.rmtree(path)
-
-
-def saved_by_zed(root: Path, commit: str) -> bool:
-    if not (root / ".git").is_dir():
-        return False
-    tree = run("git", "-C", root, "rev-parse", f"{commit}^{{tree}}").strip()
-    archives = run("git", "-C", root, "for-each-ref", "--format=%(tree)", ZED_ARCHIVE_REFS)
-    return tree in archives.split()
-
-
-def parent_pid(pid: int) -> int:
-    # The command name in /proc/<pid>/stat can contain spaces and parentheses. The fields after
-    # the last ")" are the state and then the parent PID.
-    stat = Path(f"/proc/{pid}/stat").read_text()
-    return int(stat.rpartition(")")[2].split()[1])
-
-
-def ancestors(pid: int) -> list[int]:
-    pids = []
-    while pid > 1:
-        try:
-            pid = parent_pid(pid)
-        except (OSError, ValueError):
-            break
-        pids.append(pid)
-    return pids
-
-
-def has_open_file_in(process: Path, path: Path) -> bool:
-    try:
-        fds = list((process / "fd").iterdir())
-    except OSError:
-        return False
-    for fd in fds:
-        try:
-            if Path(os.readlink(fd)).is_relative_to(path):
-                return True
-        except OSError:
-            continue
-    return False
-
-
-def processes_in(path: Path, open_files: bool = False) -> list[str]:
-    ignored = {os.getpid(), *ancestors(os.getpid())}
-    processes = []
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit() or int(entry.name) in ignored:
-            continue
-        try:
-            cwd = Path(os.readlink(entry / "cwd"))
-            comm = (entry / "comm").read_text().strip()
-        except OSError:
-            # Only root can read the working directory of another user's process. processes_in()
-            # doesn't check the processes of other users.
-            continue
-        if not cwd.is_relative_to(path) and not (open_files and has_open_file_in(entry, path)):
-            continue
-        processes.append(f"{comm} ({entry.name})")
-    return processes
-
-
-def lock_seed(root: Path, operation: int, timeout: float | None = None) -> IO[str]:
-    # `jj ws-add` copies the build directories of the default workspace into the new workspace.
-    # While `jj seed` runs its build commands, the build directories of the default workspace
-    # contain partially written outputs. A workspace that ws-add creates during the build would
-    # contain the partially written outputs too.
-    lock = (root / ".jj" / "seed.lock").open("a")
-    deadline = None if timeout is None else time.monotonic() + timeout
-    waiting = False
-    while True:
-        try:
-            fcntl.flock(lock, operation | fcntl.LOCK_NB)
-            return lock
-        except BlockingIOError:
-            if deadline is not None and time.monotonic() > deadline:
-                fail(f"`jj seed` still builds in {root}; try again when it's done")
-            if not waiting:
-                warn("waiting for `jj seed` to finish")
-                waiting = True
-            time.sleep(0.2)
 
 
 def remove_entry(path: Path) -> None:
@@ -299,16 +216,6 @@ def detach_meson_build_dirs(root: Path, dest: Path) -> None:
         warn(f"removed {relative}/build.ninja; run `meson setup --reconfigure {relative}` before building")
 
 
-def current_revision(root: Path, revision: str) -> str:
-    # Zed resolves the commit of a new worktree before ws-add takes the lock. When a jj command in
-    # another workspace rewrites the commit in between, the commit is hidden. Checking out the
-    # hidden commit makes it and its ancestors visible again next to their rewritten versions.
-    hidden = run("jj", "--ignore-working-copy", "-R", root, "log", "--no-graph", "-r", revision, "-T", 'if(self.hidden(), change_id ++ "\\n")').split()
-    if len(hidden) == 1 and len(resolve(f"change_id({hidden[0]})")) == 1:
-        return f"change_id({hidden[0]})"
-    return revision
-
-
 def add(args: argparse.Namespace) -> None:
     root = default_workspace_root()
     # Zed runs its create and remove commands in every repository, including git repositories
@@ -335,17 +242,11 @@ def add(args: argparse.Namespace) -> None:
 
     revisions = [word for revision in args.revision for word in ("--revision", revision)]
     colocate = ["--colocate"] if (root / ".git").is_dir() else []
+    run("jj", "-R", root, "workspace", "add", "--name", name, *colocate, *revisions, dest)
     if not is_subvolume(root):
-        warn(
-            f"{root} is not a btrfs subvolume, so the workspace starts without its build directories. "
-            f"Run `jj convert {root}` to convert it."
-        )
-        run("jj", "-R", root, "workspace", "add", "--name", name, *colocate, *revisions, dest)
+        warn(f"{root} is not a btrfs subvolume, so the workspace starts without its build directories")
         print(dest)
         return
-    lock = lock_seed(root, fcntl.LOCK_SH, ADD_LOCK_TIMEOUT)
-    revisions = [word for revision in args.revision for word in ("--revision", current_revision(root, revision))]
-    run("jj", "-R", root, "workspace", "add", "--name", name, *colocate, *revisions, dest)
     metadata = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}."))
     try:
         graft(root, dest, metadata)
@@ -368,7 +269,6 @@ def add(args: argparse.Namespace) -> None:
         raise
     finally:
         shutil.rmtree(metadata, ignore_errors=True)
-    lock.close()
 
     detach_meson_build_dirs(root, dest)
     print(dest)
@@ -387,36 +287,19 @@ def remove(args: argparse.Namespace) -> None:
     refuse_mounts(path)
     root = workspace_root(DEFAULT, path)
 
-    # A rebase in another workspace of the branch below the working-copy commit leaves the workspace
-    # stale. `jj util snapshot` refuses to run in a stale workspace. `jj workspace update-stale`
-    # first records the changes in the stale working-copy commit and then checks out its rewritten
-    # version.
-    run("jj", "-R", path, *SNAPSHOT_EVERY_FILE, "workspace", "update-stale")
     # `jj util snapshot` records uncommitted changes in the working-copy commit. The changes stay
     # in the repository after the files are deleted.
     run("jj", "-R", path, *SNAPSHOT_EVERY_FILE, "util", "snapshot")
-    commit, empty, description = run(
-        "jj", "--ignore-working-copy", "-R", path, "log", "--no-graph", "-r", "@", "-T", WORKING_COPY
-    ).split()
-    # Zed passes --force when it archives a thread and when the user confirms a force delete in the
-    # worktree picker. Before Zed archives a thread, it checks that no other thread or terminal uses
-    # the worktree, but the agent of the archived thread can still run in it.
-    if not args.force:
-        processes = processes_in(path)
-        if processes:
-            fail(f"{path} is the working directory of {', '.join(processes)}")
-        if empty == "false":
-            fail(f"'{path}' {DIRTY_WORKTREE}")
+    # A snapshot of a stale workspace with uncommitted changes records the changes in a second
+    # commit of the working-copy change. The working-copy commit itself is empty afterwards.
+    change = run("jj", "--ignore-working-copy", "-R", path, "log", "--no-graph", "-r", "@", "-T", "change_id")
+    changed = run("jj", "--ignore-working-copy", "-R", path, "log", "--no-graph", "-r", f"change_id({change}) ~ empty()", "-T", "change_id")
+    if not args.force and changed:
+        fail(f"'{path}' {DIRTY_WORKTREE}")
     # `jj workspace forget` only unregisters the Git worktree while the .git file of the workspace
     # exists, so it has to run before the subvolume is deleted.
     run("jj", "-R", root, "workspace", "forget", name)
     delete_subvolume(path)
-    # A Zed archive commit with the same tree contains every change in the working-copy commit.
-    # Restoring the thread recreates the changes in a new working-copy commit. Keeping the old
-    # commit as well would leave a second copy of the changes in `jj log`. Zed doesn't save the
-    # description of a commit, so a described commit is never abandoned.
-    if empty == "false" and description == "undescribed" and saved_by_zed(root, commit):
-        run("jj", "-R", root, "abandon", commit)
 
 
 def seed(args: argparse.Namespace) -> None:
@@ -433,27 +316,17 @@ def seed(args: argparse.Namespace) -> None:
     commands = json.loads(result.stdout or "null")
     if not commands:
         fail("seed.commands is not set for this repository")
-    if not isinstance(commands, list) or not all(
-        isinstance(command, list) and command and all(isinstance(word, str) for word in command)
-        for command in commands
-    ):
-        fail("seed.commands must be a list of commands, each a list of strings")
     # `jj new` moves the default workspace onto trunk(). The changes of the old working-copy commit
     # stay in that commit and aren't part of the seed build.
     if run("jj", "log", "--no-graph", "-r", "@", "-T", 'if(empty && !description, "clean")') != "clean":
         fail("the working-copy commit of the default workspace has changes or a description; move them first")
 
-    with lock_seed(root, fcntl.LOCK_EX):
-        subprocess.run(["jj", "new", "trunk()"], check=True)
-        for command in commands:
-            print(f"jj-workspace: running {' '.join(command)}", file=sys.stderr)
-            result = subprocess.run(command, cwd=root)
-            if result.returncode != 0:
-                sys.exit(result.returncode)
-
-
-def resolve(revset: str, template: str = "commit_id") -> list[str]:
-    return run("jj", "--ignore-working-copy", "log", "--no-graph", "-r", revset, "-T", f'{template} ++ "\\n"').split()
+    subprocess.run(["jj", "new", "trunk()"], check=True)
+    for command in commands:
+        print(f"jj-workspace: running {' '.join(command)}", file=sys.stderr)
+        result = subprocess.run(command, cwd=root)
+        if result.returncode != 0:
+            sys.exit(result.returncode)
 
 
 def clone_destination(source: str) -> str:
@@ -483,105 +356,6 @@ def clone(args: argparse.Namespace) -> None:
         sys.exit(result.returncode)
 
 
-def count_entries(path: Path) -> int:
-    count = 0
-    directories = [path]
-    while directories:
-        with os.scandir(directories.pop()) as entries:
-            for entry in entries:
-                count += 1
-                if entry.is_dir(follow_symlinks=False):
-                    directories.append(Path(entry.path))
-    return count
-
-
-def show_progress(label: str, done: int, total: int) -> None:
-    done = min(done, total)
-    fraction = done / total if total else 1
-    filled = int(fraction * PROGRESS_WIDTH)
-    bar = "#" * filled + "-" * (PROGRESS_WIDTH - filled)
-    print(
-        f"\r\x1b[K{label} [{bar}] {fraction:4.0%} {done:,}/{total:,}", end="", file=sys.stderr, flush=True
-    )
-
-
-def run_with_progress(command: list[str], label: str, total: int) -> None:
-    # `cp -v` and `rm -v` print one line for every file and directory. The number of lines so far
-    # is the number of entries that the command has processed.
-    terminal = sys.stderr.isatty()
-    if not terminal:
-        print(f"jj-workspace: {label} {total:,} entries", file=sys.stderr)
-    process = subprocess.Popen(command, stdout=subprocess.PIPE)
-    assert process.stdout is not None
-    done = 0
-    shown = 0.0
-    for _ in process.stdout:
-        done += 1
-        if terminal and time.monotonic() - shown >= 0.1:
-            show_progress(label, done, total)
-            shown = time.monotonic()
-    if process.wait() != 0:
-        if terminal:
-            print(file=sys.stderr)
-        raise subprocess.CalledProcessError(process.returncode, command)
-    if terminal:
-        show_progress(label, total, total)
-        print(file=sys.stderr)
-
-
-def convert(args: argparse.Namespace) -> None:
-    root = args.path.resolve()
-    if not root.is_dir():
-        fail(f"{root} is not a directory")
-    if is_subvolume(root):
-        print(f"jj-workspace: {root} is already a btrfs subvolume", file=sys.stderr)
-        return
-    if not is_btrfs(root):
-        fail(f"{root} is not on a btrfs filesystem")
-    refuse_mounts(root)
-    # A build or an editor that writes into the checkout during the copy writes into the old
-    # directory. The old directory is deleted after the copy, and the writes are lost.
-    processes = processes_in(root, open_files=True)
-    if processes:
-        fail(f"{root} is in use by {', '.join(processes)}")
-
-    new = root.with_name(f"{root.name}.new")
-    old = root.with_name(f"{root.name}.old")
-    for path in (new, old):
-        if path.exists() or path.is_symlink():
-            fail(f"{path} already exists")
-    print(f"jj-workspace: counting the files in {root}", file=sys.stderr)
-    total = count_entries(root)
-    create_subvolume(new)
-    marker = Path(tempfile.mkstemp(dir=root.parent, prefix=f".{root.name}.convert.")[1])
-    try:
-        # `cp -a` keeps the modification times. Without them, the next build in the subvolume
-        # rebuilds every target.
-        run_with_progress(["cp", "-av", "--reflink=always", f"{root}/.", f"{new}/"], "copying", total)
-        # The process check above only sees processes that run in the checkout. jj commands in other
-        # workspaces of the repository and git commands in its worktrees write into .jj and .git
-        # from outside. Their writes during the copy would be lost with the old directory.
-        changed = run("find", root, "-xdev", "(", "-newer", marker, "-o", "-cnewer", marker, ")", "-print", "-quit")
-        if changed:
-            fail(f"{changed.strip()} changed during the copy; run `jj convert` again when nothing writes to {root}")
-        root.rename(old)
-        try:
-            new.rename(root)
-        except BaseException:
-            old.rename(root)
-            raise
-    except BaseException:
-        delete_subvolume(new)
-        raise
-    finally:
-        marker.unlink()
-    run_with_progress(["rm", "-rfv", str(old)], "deleting the old directory", total)
-    print(f"jj-workspace: converted {root} to a btrfs subvolume", file=sys.stderr)
-    if Path(os.environ.get("PWD", "/")).is_relative_to(root):
-        # The shell that runs `jj convert` still has the deleted directory as its working directory.
-        print("jj-workspace: run `cd $PWD` to enter the subvolume", file=sys.stderr)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -592,7 +366,7 @@ def main() -> None:
     remove_parser = commands.add_parser("remove", help="delete a snapshot workspace and forget it")
     remove_parser.add_argument("path", type=Path)
     remove_parser.add_argument(
-        "--force", action="store_true", help="remove the workspace even if it has changes or is in use"
+        "--force", action="store_true", help="remove the workspace even if it has changes"
     )
     remove_parser.set_defaults(func=remove)
     seed_parser = commands.add_parser(
@@ -607,9 +381,6 @@ def main() -> None:
     clone_parser.add_argument("source")
     clone_parser.add_argument("rest", nargs=argparse.REMAINDER)
     clone_parser.set_defaults(func=clone)
-    convert_parser = commands.add_parser("convert", help="convert a directory to a btrfs subvolume")
-    convert_parser.add_argument("path", type=Path)
-    convert_parser.set_defaults(func=convert)
     args = parser.parse_args()
     try:
         args.func(args)
