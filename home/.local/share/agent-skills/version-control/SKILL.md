@@ -68,8 +68,14 @@ into its target.
 Implement a new feature one commit per step. After each step,
 `jj commit -m <message>` describes the working-copy commit and starts a new,
 empty one on top of it. Land fixes to earlier steps with absorb or squash as
-described above. When the feature is complete, tell the user the change ID of
-the head of the branch.
+described above.
+
+When the feature is complete, put a bookmark on the head of the branch:
+`jj bookmark create <name> -r @-`. Name it after the topic in a few lowercase
+words, for example `journal-prefetch`. If your branch already has a bookmark,
+move it to the new head with `jj bookmark move <name> --to @-` instead. Never
+move the bookmark of a branch that yours starts on. Tell the user the name of
+the bookmark.
 
 ### Workspaces
 
