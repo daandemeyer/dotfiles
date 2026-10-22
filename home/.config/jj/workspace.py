@@ -230,13 +230,17 @@ def add(args: argparse.Namespace) -> None:
     metadata = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}."))
     try:
         graft(root, dest, metadata)
-        # The snapshot contains the uncommitted changes of the default workspace. `jj restore`
-        # removes them, so the new working-copy commit starts out empty. `jj restore` reads every
-        # file of the snapshot to find them, which takes 0.2 seconds in systemd. When the default
-        # workspace has no uncommitted changes, there is nothing to remove. The `jj log` call
-        # snapshots the default workspace after the btrfs snapshot, so it records every change
-        # that the btrfs snapshot contains.
-        if run("jj", "-R", root, "log", "--no-graph", "-r", "@", "-T", "empty").strip() != "true":
+        # The snapshot contains the files of the default workspace, but the new working-copy commit
+        # is on `args.revision`. Zed passes the HEAD of the window that creates the worktree, and
+        # that window can be another workspace on another branch. Without `jj restore`, the first
+        # snapshot in the new workspace records the difference between the two revisions as a
+        # change. `jj restore` reads every file of the snapshot, which takes 0.2 seconds in
+        # systemd. No file differs when the working-copy commit of the default workspace is empty
+        # and on `args.revision`. The `jj log` calls snapshot the default workspace after the
+        # btrfs snapshot, so they record every change that the btrfs snapshot contains.
+        parents = run("jj", "-R", root, "log", "--no-graph", "-r", "@", "-T", 'if(empty, parents.map(|p| p.commit_id()).join(" "))')
+        revision = run("jj", "-R", root, "log", "--no-graph", "-r", args.revision, "-T", "commit_id")
+        if parents != revision:
             run("jj", "-R", dest, "restore")
     except BaseException:
         if dest.exists():
