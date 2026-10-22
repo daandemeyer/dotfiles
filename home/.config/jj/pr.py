@@ -2,7 +2,8 @@
 """Push jj bookmarks to the push remote and open a pull request for each of them.
 
 `jj pr` runs this script. If a bookmark already has an open pull request, the script resolves
-the review threads of that pull request and does not create a new one.
+the review threads of that pull request and does not create a new one. `jj prs` runs it with
+--list to show the pull request of every branch.
 """
 
 import argparse
@@ -12,6 +13,10 @@ import sys
 
 BOOKMARK_NAMES = 'bookmarks.map(|b| b.name()).join("\\n") ++ "\\n"'
 LOCAL_BOOKMARK_NAMES = 'if(!self.remote() && self.present(), self.name() ++ "\\n")'
+BRANCH_LINE = (
+    'change_id.shortest(8) ++ "\\t" ++ local_bookmarks.map(|b| b.name() ++ if(!b.synced(), "*")).join(" ")'
+    ' ++ "\\t" ++ description.first_line() ++ "\\n"'
+)
 TRUNK_NAMES = 'remote_bookmarks.filter(|b| b.remote() != "git").map(|b| b.name()).join("\\n") ++ "\\n"'
 
 THREADS_QUERY = """
@@ -73,6 +78,41 @@ def resolve_threads(pr: dict) -> None:
     print(f"{pr['url']}: resolved {len(threads)} review threads")
 
 
+def pr_state(pr: dict) -> str:
+    if pr["state"] != "OPEN":
+        return pr["state"].lower()
+    if pr["isDraft"]:
+        return "draft"
+    return {"APPROVED": "approved", "CHANGES_REQUESTED": "changes requested"}.get(pr["reviewDecision"], "open")
+
+
+def list_branches(owner: str) -> None:
+    prs = {}
+    for pr in json.loads(run(
+        "gh", "pr", "list", "--author", "@me", "--state", "all", "--limit", "500",
+        "--json", "number,state,isDraft,reviewDecision,headRefName,headRepositoryOwner",
+    )):
+        # gh lists the newest pull request first. An older pull request from the same branch was
+        # closed or merged before the newest one was opened.
+        if pr["headRepositoryOwner"]["login"] == owner:
+            prs.setdefault(pr["headRefName"], pr)
+    rows = []
+    for line in lines("jj", "log", "--no-graph", "-r", "branches()", "-T", BRANCH_LINE):
+        change, bookmarks, subject = line.split("\t", 2)
+        states = []
+        for bookmark in bookmarks.split():
+            # The template appends "*" to a local bookmark that points at a different commit than
+            # the bookmark on the remote.
+            name = bookmark.removesuffix("*")
+            pr = prs.get(name)
+            state = f"#{pr['number']} {pr_state(pr)}" if pr else "no pull request"
+            states.append(f"{state}, unpushed changes" if bookmark.endswith("*") and pr else state)
+        rows.append((change, bookmarks or "-", "; ".join(states) or "no bookmark", subject))
+    widths = [max((len(row[i]) for row in rows), default=0) for i in range(3)]
+    for row in rows:
+        print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)) + "  " + row[3])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="jj pr", description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -87,9 +127,13 @@ def main() -> None:
         "revsets", nargs="*", metavar="REVSETS",
         help="push the bookmarks of these commits, or create one for an unbookmarked commit",
     )
+    parser.add_argument("--list", action="store_true", help="show the pull request of every branch")
     args = parser.parse_intermixed_args()
+    if args.list:
+        list_branches(remote_owner(push_remote()))
+        return
     if not (args.bookmark or args.change or args.revsets):
-        parser.error("specify -b, -c or REVSETS")
+        parser.error("specify -b, -c, REVSETS or --list")
 
     owner = remote_owner(push_remote())
     base = next(iter(lines("jj", "log", "--no-graph", "-r", "trunk()", "-T", TRUNK_NAMES)), None)

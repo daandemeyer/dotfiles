@@ -23,7 +23,10 @@ git-push = 'remote_bookmarks(remote=exact:remote)..@ ~ megamerge()'
 # ancestor then rebases it into a divergent copy.
 'immutable_heads()' = 'trunk() | tags() | untracked_remote_bookmarks(remote=~exact:"fork") | untracked_remote_tags()'
 
-'megamerge()' = 'coalesce(present(megamerge), reachable(stack(), merges()))'
+'megamerge()' = 'present(megamerge)'
+# A branch that another branch starts on has no head of its own. Its bookmark adds the branch to
+# branches().
+'branches()' = '(heads(mutable() ~ working_copies() ~ megamerge()) | (mutable() & bookmarks())) ~ megamerge()'
 
 'stack()' = 'stack(@)'
 'stack(x)' = 'stack(x, 2)'
@@ -36,9 +39,28 @@ git-push = 'remote_bookmarks(remote=exact:remote)..@ ~ megamerge()'
 auto-update-stale = true
 
 [aliases]
-# `jj restack` to rebase the branches of the megamerge onto trunk(). It also rewrites the branches
-# that agents work on, so run it while they're idle.
-restack = ["rebase", "--onto", "trunk()", "--source", "roots(trunk()..megamerge())", "--simplify-parents", "--skip-emptied"]
+# `jj branches` to list the head of every branch, and `jj prs` to list the branches with the state
+# of their pull requests.
+branches = ["log", "--no-graph", "--revisions", "branches()", "--template", "builtin_log_oneline"]
+prs = ["util", "exec", "--", "bash", "-c", 'exec "$(dirname "$(jj config path --user)")/pr.py" --list "$@"', "--"]
+
+# `jj restack` to fetch and rebase every branch onto trunk(). It also rewrites the branches that
+# agents work on, so run it while they're idle.
+restack = ["util", "exec", "--", "bash", "-c", '''
+set -euo pipefail
+jj git fetch
+names='if(!self.remote(), "exact:" ++ self.name() ++ "\n")'
+before=$(jj bookmark list --revisions 'mutable()' --template "$names" | sort)
+# Empty working-copy commits on trunk() stay where they are, so idle workspaces keep their files.
+jj rebase --source 'roots(mutable()) ~ (working_copies() & empty())' --onto 'trunk()' --simplify-parents --skip-emptied
+# --skip-emptied abandons the commits that trunk() already contains. jj moves the bookmarks of an
+# abandoned commit to its parent. A bookmark that was on a branch before and is in trunk() now
+# belongs to a branch that was merged.
+merged=$(comm -12 <(echo "$before") <(jj bookmark list --revisions '::trunk()' --template "$names" | sort))
+if [[ -n "$merged" ]]; then
+    jj bookmark delete $merged
+fi
+''']
 
 # `jj push-megamerge` to publish megamerge as main on my fork. Never push it with plain
 # git: jj doesn't see that push, and once the stack is rewritten, importing the stale
