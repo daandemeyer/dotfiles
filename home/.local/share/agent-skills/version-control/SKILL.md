@@ -51,6 +51,9 @@ Make the edits in the working-copy commit on top of your branch, then move
 them into the commits they belong to:
 
 1. `jj absorb` moves each hunk into the commit that last touched those lines.
+   When your branch starts on another branch, run
+   `jj absorb --into '<head of the other branch>..@'` instead. Without
+   `--into`, absorb also moves hunks into the commits of the other branch.
 2. For hunks absorb leaves behind, use `jj squash --into <rev> [paths...]`.
    Squash moves whole files. Never use `--interactive`, it needs a terminal.
 
@@ -72,8 +75,8 @@ the head of the branch.
 
 Zed creates a jj workspace for an agent thread that runs in its own worktree,
 so that several agents can work at the same time. Zed also removes the
-workspace when the user archives the thread. Never create or remove a
-workspace yourself.
+workspace when the user archives the thread. Never remove a workspace
+yourself, and only create one when the `review` skill asks for it.
 
 You are in a workspace other than the default one when `jj workspace root`
 prints a different path than `jj workspace root --name default`. In that case,

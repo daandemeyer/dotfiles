@@ -26,9 +26,11 @@ reporting anything.
   reviewed revision, not whatever the working copy contains.
 - If an earlier report for the same target exists, this is a re-review. See
   step 8.
-- To build or test the reviewed revision, use a separate jj workspace or git
-  worktree under `/var/tmp`. Never change a working copy that has uncommitted
-  changes without asking first.
+- To build or test the reviewed revision in a jj workspace of your own (see
+  the `version-control` skill), check it out there with `jj new <rev>`.
+  Otherwise use a separate jj workspace or git worktree under `/var/tmp`, and
+  remove it when the review is done. Never change a working copy that has
+  uncommitted changes without asking first.
 - Read the full commit message or pull request description and write down what
   the change claims to do. Reread it before verifying findings.
 - Read the project's rules: contribution guidelines, coding style, AGENTS.md,
