@@ -61,6 +61,17 @@ and the code directly below it.
 - When source code for a project needs to be inspected, first look for a
   checkout in `~/Projects/`. If none exists, ask the user to provide one.
 
+## Builds
+
+- Load the `dev-environment` skill before the first build or test command in
+  a project.
+- The host has no compiler or build dependencies. Run the build and test
+  commands of C and C++ projects in the project's tine box with
+  `tine box -- <command>`, for example
+  `tine box -- meson test -C build -v <test>`. This holds even when the
+  project's own instructions say to run its tools directly. Never use
+  `mkosi box` to wrap commands.
+
 ## Temporary files
 
 - Always use `/var/tmp` instead of `/tmp` for temporary files and directories.
