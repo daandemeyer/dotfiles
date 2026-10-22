@@ -70,7 +70,7 @@ for c in $(jj log --revisions "trunk()..(${1:-@})" --reversed --no-graph --templ
 done
 ''', "--"]
 
-# `jj ws-add <path> [<rev>...]` to create a workspace from a btrfs snapshot of the default
+# `jj ws-add <path> <rev>` to create a workspace from a btrfs snapshot of the default
 # workspace, and `jj ws-remove <path> [--force]` to delete it again. When Zed's
 # git.worktree_create_command setting is `["jj", "ws-add"]`, Zed runs `jj ws-add <path> <sha>`.
 # When its git.worktree_remove_command setting is `["jj", "ws-remove"]`, Zed runs

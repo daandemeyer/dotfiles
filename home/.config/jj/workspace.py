@@ -38,7 +38,6 @@ SNAPSHOT_EVERY_FILE = (
     "--config",
     "snapshot.auto-update-stale=true",
 )
-WORKSPACE_ROOTS = 'self.name() ++ "\\t" ++ self.root() ++ "\\n"'
 
 
 def run(*args: str | Path) -> str:
@@ -110,14 +109,16 @@ def snapshot_subvolume(source: Path, dest: Path) -> None:
         os.close(fd)
 
 
-def workspace_root(name: str | None = None, repository: Path | None = None) -> Path:
-    command = ["jj", "--ignore-working-copy", *(["-R", repository] if repository else []), "workspace", "root"]
-    return Path(run(*command, *(["--name", name] if name else [])).strip()).resolve()
-
-
-def default_workspace_root() -> Path | None:
+def workspace_root(name: str | None = None, repository: Path | None = None) -> Path | None:
     result = subprocess.run(
-        ["jj", "--ignore-working-copy", "workspace", "root", "--name", DEFAULT],
+        [
+            "jj",
+            "--ignore-working-copy",
+            *(["-R", str(repository)] if repository else []),
+            "workspace",
+            "root",
+            *(["--name", name] if name else []),
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
@@ -126,7 +127,8 @@ def default_workspace_root() -> Path | None:
 
 
 def workspace_name(path: Path) -> str:
-    for line in run("jj", "--ignore-working-copy", "-R", path, "workspace", "list", "-T", WORKSPACE_ROOTS).splitlines():
+    workspaces = run("jj", "--ignore-working-copy", "-R", path, "workspace", "list", "-T", 'name ++ "\\t" ++ root ++ "\\n"')
+    for line in workspaces.splitlines():
         name, _, root = line.partition("\t")
         if root and Path(root).resolve() == path:
             return name
@@ -164,13 +166,6 @@ def delete_subvolume(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def remove_entry(path: Path) -> None:
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
-    elif path.exists() or path.is_symlink():
-        path.unlink()
-
-
 def graft(root: Path, dest: Path, metadata: Path) -> None:
     """`jj workspace add` and `git worktree add` refuse a directory that is not empty.
 
@@ -182,25 +177,15 @@ def graft(root: Path, dest: Path, metadata: Path) -> None:
     shutil.rmtree(dest)
     snapshot_subvolume(root, dest)
     for entry in METADATA:
-        remove_entry(dest / entry)
+        if (dest / entry).exists():
+            shutil.rmtree(dest / entry)
         if (metadata / entry).exists():
             # The snapshot is a separate btrfs subvolume. rename() fails with EXDEV across
             # subvolumes.
             shutil.move(metadata / entry, dest / entry)
 
 
-def meson_source_dir(build_ninja: Path) -> str | None:
-    with build_ninja.open() as f:
-        for line in f:
-            words = line.split()
-            if words[:1] == ["command"] and "regenerate" in words:
-                index = words.index("regenerate")
-                if words[index - 1] == "--internal" and index + 1 < len(words):
-                    return words[index + 1]
-    return None
-
-
-def detach_meson_build_dirs(root: Path, dest: Path) -> None:
+def detach_meson_build_dirs(dest: Path) -> None:
     # meson writes absolute paths into build.ninja. With the build.ninja of the default workspace,
     # ninja in `dest` runs the code generators from `root` and writes outputs into the build
     # directory of `root`. A reconfigure takes about ten seconds per build directory in a tine
@@ -209,21 +194,17 @@ def detach_meson_build_dirs(root: Path, dest: Path) -> None:
         build_dir = build_ninja.parent
         if not (build_dir / "meson-private" / "coredata.dat").exists():
             continue
-        if meson_source_dir(build_ninja) != str(root):
-            continue
         build_ninja.unlink()
         relative = build_dir.relative_to(dest)
         warn(f"removed {relative}/build.ninja; run `meson setup --reconfigure {relative}` before building")
 
 
 def add(args: argparse.Namespace) -> None:
-    root = default_workspace_root()
+    root = workspace_root(DEFAULT)
     # Zed runs its create and remove commands in every repository, including git repositories
     # without jj. Those get the git worktree that Zed creates without the commands.
     if root is None:
-        if len(args.revision) != 1:
-            fail("a git worktree needs exactly one revision")
-        run("git", "worktree", "add", "--detach", "--", args.path, args.revision[0])
+        run("git", "worktree", "add", "--detach", "--", args.path, args.revision)
         print(args.path.absolute())
         return
     dest = args.path.absolute()
@@ -240,9 +221,8 @@ def add(args: argparse.Namespace) -> None:
     else:
         name = dest.parent.name if dest.name == root.name else dest.name
 
-    revisions = [word for revision in args.revision for word in ("--revision", revision)]
     colocate = ["--colocate"] if (root / ".git").is_dir() else []
-    run("jj", "-R", root, "workspace", "add", "--name", name, *colocate, *revisions, dest)
+    run("jj", "-R", root, "workspace", "add", "--name", name, *colocate, "--revision", args.revision, dest)
     if not is_subvolume(root):
         warn(f"{root} is not a btrfs subvolume, so the workspace starts without its build directories")
         print(dest)
@@ -270,7 +250,7 @@ def add(args: argparse.Namespace) -> None:
     finally:
         shutil.rmtree(metadata, ignore_errors=True)
 
-    detach_meson_build_dirs(root, dest)
+    detach_meson_build_dirs(dest)
     print(dest)
 
 
@@ -304,7 +284,7 @@ def remove(args: argparse.Namespace) -> None:
 
 def seed(args: argparse.Namespace) -> None:
     root = workspace_root(DEFAULT)
-    if workspace_root() != root:
+    if root is None or workspace_root() != root:
         fail("run `jj seed` from the default workspace")
     result = subprocess.run(
         ["jj", "config", "list", "seed.commands", "-T", "json(value)"],
@@ -361,7 +341,7 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     add_parser = commands.add_parser("add", help="create a workspace from a snapshot of the default workspace")
     add_parser.add_argument("path", type=Path)
-    add_parser.add_argument("revision", nargs="*", help="parents of the new working-copy commit")
+    add_parser.add_argument("revision", help="parent of the new working-copy commit")
     add_parser.set_defaults(func=add)
     remove_parser = commands.add_parser("remove", help="delete a snapshot workspace and forget it")
     remove_parser.add_argument("path", type=Path)
