@@ -2,8 +2,9 @@
 """Push jj bookmarks to the push remote and open a pull request for each of them.
 
 `jj pr` runs this script. If a bookmark already has an open pull request, the script resolves
-the review threads of that pull request and does not create a new one. `jj prs` runs it with
---list to show the pull request of every branch.
+the review threads of that pull request and does not create a new one. For a commit without a
+bookmark, the script moves the bookmark of the nearest ancestor with an open pull request to the
+commit. `jj prs` runs the script with --list to show the pull request of every branch.
 """
 
 import argparse
@@ -17,6 +18,8 @@ BRANCH_LINE = (
     'change_id.shortest(8) ++ "\\t" ++ local_bookmarks.map(|b| b.name() ++ if(!b.synced(), "*")).join(" ")'
     ' ++ "\\t" ++ description.first_line() ++ "\\n"'
 )
+ANCESTOR_BOOKMARKS = "heads(::({}) & mutable() & bookmarks())"
+LOCAL_BOOKMARKS = 'local_bookmarks.map(|b| b.name()).join("\\n") ++ "\\n"'
 TRUNK_NAMES = 'remote_bookmarks.filter(|b| b.remote() != "git").map(|b| b.name()).join("\\n") ++ "\\n"'
 
 THREADS_QUERY = """
@@ -60,6 +63,21 @@ def remote_owner(remote: str) -> str:
         if name == remote:
             return run("gh", "repo", "view", url, "--json", "owner", "--jq", ".owner.login").strip()
     sys.exit(f"jj pr: no such remote: {remote}")
+
+
+def open_pr(branch: str, owner: str) -> dict | None:
+    # `gh pr list --head` does not accept `owner:branch` and matches the branch name on every
+    # fork. A branch with the same name on another fork belongs to a different pull request.
+    # The owner check below drops pull requests from other forks.
+    prs = [
+        pr
+        for pr in json.loads(run(
+            "gh", "pr", "list", "--head", branch, "--state", "open",
+            "--json", "id,url,headRepositoryOwner",
+        ))
+        if pr["headRepositoryOwner"]["login"] == owner
+    ]
+    return prs[0] if prs else None
 
 
 def resolve_threads(pr: dict) -> None:
@@ -125,7 +143,8 @@ def main() -> None:
     )
     parser.add_argument(
         "revsets", nargs="*", metavar="REVSETS",
-        help="push the bookmarks of these commits, or create one for an unbookmarked commit",
+        help="push the bookmarks of these commits. For a commit without a bookmark, move the bookmark "
+        "of its nearest ancestor with an open pull request to it, or create a new bookmark",
     )
     parser.add_argument("--list", action="store_true", help="show the pull request of every branch")
     args = parser.parse_intermixed_args()
@@ -149,6 +168,19 @@ def main() -> None:
         branches += lines("jj", "log", "-r", revset, "--no-graph", "-T", change_name)
     for revset in args.revsets:
         bookmarks = lines("jj", "log", "-r", revset, "--no-graph", "-T", BOOKMARK_NAMES)
+        if not bookmarks:
+            # A new commit on top of a branch with an open pull request usually belongs to that
+            # pull request. `jj git push --change` would push the commit to a new branch. The
+            # script would then open a second pull request for that branch. Pass -c to open a
+            # separate pull request for a branch that starts on another branch.
+            ancestors = lines(
+                "jj", "log", "-r", ANCESTOR_BOOKMARKS.format(revset), "--no-graph", "-T", LOCAL_BOOKMARKS
+            )
+            bookmarks = [b for b in ancestors if open_pr(b, owner)]
+            if len(bookmarks) > 1:
+                sys.exit(f"jj pr: {revset} has several ancestors with an open pull request: {' '.join(bookmarks)}")
+            if bookmarks:
+                run("jj", "bookmark", "move", bookmarks[0], "--to", revset)
         if bookmarks:
             push += [arg for b in bookmarks for arg in ("--bookmark", f"exact:{b}")]
         else:
@@ -161,19 +193,9 @@ def main() -> None:
     subprocess.run(["jj", "git", "push", *push], check=True)
 
     for branch in dict.fromkeys(branches):
-        # `gh pr list --head` does not accept `owner:branch` and matches the branch name on every
-        # fork. A branch with the same name on another fork belongs to a different pull request.
-        # The owner check below drops pull requests from other forks.
-        prs = [
-            pr
-            for pr in json.loads(run(
-                "gh", "pr", "list", "--head", branch, "--state", "open",
-                "--json", "id,url,headRepositoryOwner",
-            ))
-            if pr["headRepositoryOwner"]["login"] == owner
-        ]
-        if prs:
-            resolve_threads(prs[0])
+        pr = open_pr(branch, owner)
+        if pr:
+            resolve_threads(pr)
             continue
         create = ["gh", "pr", "create", "--fill", "--head", f"{owner}:{branch}"]
         if base:
