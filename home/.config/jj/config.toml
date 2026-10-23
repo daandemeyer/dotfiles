@@ -7,6 +7,9 @@ email = "daan@amutable.com"
 [git]
 push = "fork"
 fetch = ["origin"]
+# Upstream repositories contain empty merge commits, so commits that a remote already has are
+# skipped. `--allow-private` overrides the check.
+private-commits = 'private() ~ ::remote_bookmarks()'
 
 [revsets]
 log-graph-prioritize = 'coalesce(megamerge(), trunk())'
@@ -24,6 +27,9 @@ git-push = 'remote_bookmarks(remote=exact:remote)..@ ~ megamerge()'
 'immutable_heads()' = 'trunk() | tags() | untracked_remote_bookmarks(remote=~exact:"fork") | untracked_remote_tags()'
 
 'megamerge()' = 'present(megamerge)'
+# A repository config can only replace git.private-commits, not add to it. A repository with rules
+# of its own overrides private() instead and keeps git.private-commits.
+'private()' = 'empty()'
 # A branch that another branch starts on has no head of its own. Its bookmark adds the branch to
 # branches().
 'branches()' = '(heads(mutable() ~ working_copies() ~ megamerge()) | (mutable() & bookmarks())) ~ megamerge()'
