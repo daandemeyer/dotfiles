@@ -5,9 +5,16 @@
 the review threads of that pull request and does not create a new one. For a commit without a
 bookmark, the script moves the bookmark of the nearest ancestor with an open pull request to the
 commit. `jj prs` runs the script with --list to show the pull request of every branch.
+
+The title and body of a pull request come from the git branch description of its bookmark,
+`branch.<bookmark>.description`, which `git branch --edit-description` edits. The first line is
+the title and the rest is the body. The script applies a changed description to an open pull
+request. It skips a pull request that was edited on GitHub since the script last applied a
+description, unless --force is given.
 """
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -50,6 +57,70 @@ def lines(*args: str) -> list[str]:
     return [line for line in run(*args).splitlines() if line]
 
 
+GIT_DIR: str | None = None
+
+
+def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    global GIT_DIR
+    if GIT_DIR is None:
+        GIT_DIR = run("jj", "git", "root").strip()
+    return subprocess.run(
+        ["git", "--git-dir", GIT_DIR, *args],
+        check=check, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    )
+
+
+def git_config(key: str) -> str | None:
+    result = git("config", "get", key, check=False)
+    return result.stdout.rstrip("\n") if result.returncode == 0 else None
+
+
+def split_description(description: str) -> tuple[str, str]:
+    title, _, body = description.partition("\n")
+    return title.strip(), body.strip()
+
+
+def digest(title: str, body: str) -> str:
+    # GitHub stores a body that was edited in its web interface with CRLF line endings.
+    text = "\n".join(line.rstrip() for line in f"{title}\n\n{body}".replace("\r\n", "\n").split("\n"))
+    return hashlib.sha256(text.strip().encode()).hexdigest()[:16]
+
+
+def description_pending(branch: str) -> bool:
+    description = git_config(f"branch.{branch}.description")
+    if not description:
+        return False
+    return digest(*split_description(description)) != git_config(f"branch.{branch}.jj-pr-applied")
+
+
+def apply_description(pr: dict, branch: str, description: str, force: bool) -> None:
+    title, body = split_description(description)
+    wanted = digest(title, body)
+    current = digest(pr["title"], pr["body"])
+    applied_key = f"branch.{branch}.jj-pr-applied"
+    applied = git_config(applied_key)
+    if current == wanted:
+        if applied != wanted:
+            git("config", "set", applied_key, wanted)
+        return
+    if applied == wanted:
+        # The branch description did not change since the script applied it, so the pull request
+        # was edited on GitHub. The script keeps that edit.
+        return
+    if applied not in (None, current) and not force:
+        print(
+            f"{pr['url']}: the pull request was edited on GitHub and the branch description changed, "
+            "pass --force to overwrite the pull request"
+        )
+        return
+    subprocess.run(
+        ["gh", "pr", "edit", pr["url"], "--title", title, "--body-file", "-"],
+        check=True, input=body, stdout=subprocess.DEVNULL, text=True,
+    )
+    git("config", "set", applied_key, wanted)
+    print(f"{pr['url']}: updated the title and description")
+
+
 def push_remote() -> str:
     result = subprocess.run(
         ["jj", "config", "get", "git.push"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
@@ -73,7 +144,7 @@ def open_pr(branch: str, owner: str) -> dict | None:
         pr
         for pr in json.loads(run(
             "gh", "pr", "list", "--head", branch, "--state", "open",
-            "--json", "id,url,headRepositoryOwner",
+            "--json", "id,url,title,body,headRepositoryOwner",
         ))
         if pr["headRepositoryOwner"]["login"] == owner
     ]
@@ -123,8 +194,15 @@ def list_branches(owner: str) -> None:
             # the bookmark on the remote.
             name = bookmark.removesuffix("*")
             pr = prs.get(name)
-            state = f"#{pr['number']} {pr_state(pr)}" if pr else "no pull request"
-            states.append(f"{state}, unpushed changes" if bookmark.endswith("*") and pr else state)
+            if not pr:
+                states.append("no pull request")
+                continue
+            state = f"#{pr['number']} {pr_state(pr)}"
+            if bookmark.endswith("*"):
+                state += ", unpushed changes"
+            if description_pending(name):
+                state += ", description pending"
+            states.append(state)
         rows.append((change, bookmarks or "-", "; ".join(states) or "no bookmark", subject))
     widths = [max((len(row[i]) for row in rows), default=0) for i in range(3)]
     for row in rows:
@@ -147,6 +225,10 @@ def main() -> None:
         "of its nearest ancestor with an open pull request to it, or create a new bookmark",
     )
     parser.add_argument("--list", action="store_true", help="show the pull request of every branch")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="apply the branch description to a pull request that was edited on GitHub",
+    )
     args = parser.parse_intermixed_args()
     if args.list:
         list_branches(remote_owner(push_remote()))
@@ -193,17 +275,28 @@ def main() -> None:
     subprocess.run(["jj", "git", "push", *push], check=True)
 
     for branch in dict.fromkeys(branches):
+        description = git_config(f"branch.{branch}.description")
         pr = open_pr(branch, owner)
         if pr:
+            if description:
+                apply_description(pr, branch, description, args.force)
             resolve_threads(pr)
             continue
-        create = ["gh", "pr", "create", "--fill", "--head", f"{owner}:{branch}"]
+        create = ["gh", "pr", "create", "--head", f"{owner}:{branch}"]
+        body = None
+        if description:
+            title, body = split_description(description)
+            create += ["--title", title, "--body-file", "-"]
+        else:
+            create += ["--fill"]
         if base:
             create += ["--base", base]
-        result = subprocess.run(create, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(create, input=body, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if result.returncode != 0:
             sys.stderr.write(result.stderr)
             sys.exit(result.returncode)
+        if description:
+            git("config", "set", f"branch.{branch}.jj-pr-applied", digest(title, body))
         print(f"{result.stdout.strip()}: created pull request")
 
 
