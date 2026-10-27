@@ -108,7 +108,8 @@ commit in the right place in the series.
 
 Feedback on a commit message goes into that commit with `jj describe <rev>`.
 Feedback on the pull request description becomes a new description that you
-give to the user. Do not edit the pull request.
+store on the bookmark, as the `version-control` skill describes. `jj pr`
+applies it when the user pushes. Do not edit the pull request on GitHub.
 
 Build and run the relevant tests after the changes. Every commit in the series
 must still build and pass its tests. Check each commit you changed, not only

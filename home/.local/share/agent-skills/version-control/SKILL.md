@@ -77,6 +77,15 @@ move it to the new head with `jj bookmark move <name> --to @-` instead. Never
 move the bookmark of a branch that yours starts on. Tell the user the name of
 the bookmark.
 
+Then write the pull request description, as described under "Pull request
+descriptions" below, and store it on the bookmark:
+
+    git --git-dir="$(jj git root)" config set branch.<name>.description "$(cat /var/tmp/<name>.md)"
+
+`jj pr` uses the first line as the title and the rest as the body when the
+user creates or updates the pull request. Store a new description the same
+way when later work on the branch makes the old one wrong.
+
 ### Workspaces
 
 Zed creates a jj workspace for an agent thread that runs in its own worktree,
@@ -181,6 +190,9 @@ daemon when it differs.
 ## Pull request descriptions
 
 Briefly explain what the change does and why, following the same rules as
-commit messages. No headings or bullet lists for a simple change, no
-file-by-file summaries that restate the diff, and no detail about unimportant
-things.
+commit messages. The first line is the title, like the subject of a commit.
+No headings or bullet lists for a simple change, no file-by-file summaries
+that restate the diff, and no detail about unimportant things.
+
+Store the description on the bookmark of the branch, as described under "New
+features". Never post it to GitHub yourself.
