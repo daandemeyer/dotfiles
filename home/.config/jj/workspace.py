@@ -320,8 +320,19 @@ def clone_destination(source: str) -> str:
     return name.removesuffix(".git")
 
 
+def clone_source(source: str) -> str:
+    # `jj git clone` reads `github.com/owner/repo` as a local path, like git does. The security key
+    # authenticates an ssh address, so the ssh form works for private repositories too.
+    if "://" in source or ":" in source.partition("/")[0] or Path(source).exists():
+        return source
+    host, slash, path = source.partition("/")
+    if slash and "." in host and path:
+        return f"git@{host}:{path}"
+    return source
+
+
 def clone(args: argparse.Namespace) -> None:
-    source, rest = args.source, args.rest
+    source, rest = clone_source(args.source), args.rest
     if rest and not rest[0].startswith("-"):
         destination, *options = rest
     else:
