@@ -65,6 +65,11 @@ jj rebase --source 'roots(mutable()) ~ (working_copies() & empty())' --onto 'tru
 merged=$(comm -12 <(echo "$before") <(jj bookmark list --revisions '::trunk()' --template "$names" | sort))
 if [[ -n "$merged" ]]; then
     jj bookmark delete $merged
+    # `jj bookmark delete` leaves the `branch.<name>` section of the git config in place. `jj pr`
+    # keeps the pull request description of the bookmark in that section.
+    for b in $merged; do
+        git --git-dir="$(jj git root)" config remove-section "branch.${b#exact:}" 2>/dev/null || true
+    done
 fi
 ''']
 
