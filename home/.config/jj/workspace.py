@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from pathlib import Path
 from typing import NoReturn
 
@@ -331,6 +332,21 @@ def clone_source(source: str) -> str:
     return source
 
 
+def ssh_target(source: str) -> list[str] | None:
+    if "://" in source:
+        url = urllib.parse.urlsplit(source)
+        if url.scheme not in ("ssh", "git+ssh", "ssh+git") or not url.hostname:
+            return None
+        target = ["-p", str(url.port)] if url.port else []
+        return target + [f"{url.username}@{url.hostname}" if url.username else url.hostname]
+    # git reads `[user@]host:path` as an ssh address, unless a slash comes before the colon or the
+    # path exists locally.
+    host, colon, _ = source.partition(":")
+    if colon and "/" not in host and not Path(source).exists():
+        return [host]
+    return None
+
+
 def clone(args: argparse.Namespace) -> None:
     source, rest = clone_source(args.source), args.rest
     if rest and not rest[0].startswith("-"):
@@ -345,7 +361,28 @@ def clone(args: argparse.Namespace) -> None:
         fail(f"{dest.parent} is not on a btrfs filesystem")
 
     create_subvolume(dest)
-    result = subprocess.run(["jj", "git", "clone", *options, source, str(dest)])
+    env = os.environ.copy()
+    target = ssh_target(source)
+    control = None
+    if target:
+        # jj runs git with its stderr piped. ssh then hands the request to touch a security key to
+        # the program in SSH_ASKPASS instead of printing it on the terminal.
+        control = Path(os.environ.get("XDG_RUNTIME_DIR", "/var/tmp")) / f"jj-clone-{os.getpid()}"
+        result = subprocess.run(
+            ["ssh", "-o", "ControlMaster=yes", "-o", f"ControlPath={control}", "-N", "-f", *target]
+        )
+        if result.returncode != 0:
+            delete_subvolume(dest)
+            sys.exit(result.returncode)
+        env["GIT_SSH_COMMAND"] = f"{env.get('GIT_SSH_COMMAND', 'ssh')} -o ControlPath={control}"
+    try:
+        result = subprocess.run(["jj", "git", "clone", *options, source, str(dest)], env=env)
+    finally:
+        if control:
+            subprocess.run(
+                ["ssh", "-o", f"ControlPath={control}", "-O", "exit", *target],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
     if result.returncode != 0:
         delete_subvolume(dest)
         sys.exit(result.returncode)
