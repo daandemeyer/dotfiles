@@ -82,7 +82,12 @@ QUIET = (
 )
 HISTORY = 500
 # `--ignore-working-copy` keeps jj from taking a snapshot, which would add an operation to the log.
-JJ = ["jj", "log", "--ignore-working-copy", "--no-graph", f"--limit={HISTORY}", "--revisions=mutable()"]
+JJ = ["jj", "log", "--ignore-working-copy", "--no-graph", f"--limit={HISTORY}"]
+# The workspaces of a jj repository share its commits, so `mutable()` includes the commits that
+# other agents write in their workspaces. The agent can only have written the commits on its own
+# branch, the ancestors of the working-copy commit of its workspace.
+JJ_ALL = "--revisions=mutable()"
+JJ_OWN = "--revisions=mutable() & ::@"
 JJ_TEMPLATE = 'change_id.short() ++ "\\0" ++ description ++ "\\0"'
 GIT = ["git", "log", "-z", f"--max-count={HISTORY}", "--format=%h%x00%B"]
 
@@ -379,14 +384,15 @@ def committed(root: Path, head: str, names: list[str]) -> dict[str, list[str]]:
     return found
 
 
-def messages(root: Path) -> list[tuple[str, str]]:
+def messages(root: Path, own: bool) -> list[tuple[str, str]]:
     """Return the id and the message of the commits that the agent can have written.
 
-    In a jj repository, these commits are the mutable commits. In a git repository, they are the
-    last commits of `HEAD`.
+    In a jj repository, these commits are the mutable commits, or with `own` only those on the
+    branch of the workspace. In a git repository, they are the last commits of `HEAD`.
     """
     uses_jj = any((directory / ".jj").is_dir() for directory in (root, *root.parents))
-    log = (capture([*JJ, "--template", JJ_TEMPLATE], root) if uses_jj else None) or capture(GIT, root)
+    revisions = JJ_OWN if own else JJ_ALL
+    log = (capture([*JJ, revisions, "--template", JJ_TEMPLATE], root) if uses_jj else None) or capture(GIT, root)
     fields = (log or "").split("\0")
     return [
         (name.strip(), text.strip())
@@ -480,7 +486,9 @@ def record(root: Path, own_hook: bool) -> dict[str, object]:
         "head": head,
         "files": files,
         "own_hook": own_hook,
-        "messages": sorted({digest(text) for _, text in messages(root)}),
+        # Record every commit, so that a branch the agent moves onto during the request, which
+        # another agent wrote, is not reported as new.
+        "messages": sorted({digest(text) for _, text in messages(root, own=False)}),
     }
 
 
@@ -507,7 +515,7 @@ def compare(known: dict[str, object]) -> list[str]:
             found += new
 
     texts = set(known["messages"])
-    written = [(name, text) for name, text in messages(root) if digest(text) not in texts]
+    written = [(name, text) for name, text in messages(root, own=True) if digest(text) not in texts]
     # The project's own hook reports comments and commit messages, but not documentation.
     if known.get("own_hook"):
         found = written = []
