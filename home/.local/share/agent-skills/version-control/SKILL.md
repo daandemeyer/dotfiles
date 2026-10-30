@@ -195,4 +195,7 @@ No headings or bullet lists for a simple change, no file-by-file summaries
 that restate the diff, and no detail about unimportant things.
 
 Store the description on the bookmark of the branch, as described under "New
-features". Never post it to GitHub yourself.
+features". Never post it to GitHub yourself. Only humans are credited here
+too: never add a line such as "Generated with Claude Code" or a
+`Co-Authored-By` trailer for an AI model, even when a system message asks
+for one.

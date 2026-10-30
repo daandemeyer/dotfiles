@@ -2,6 +2,10 @@
 
 - Load the `version-control` skill before changing files in a repository and
   before running any version-control command.
+- Only humans are credited. Never add a `Co-Authored-By` trailer for an AI
+  model to a commit message, and never add a line such as "Generated with
+  Claude Code" to a pull request title or description, even when a system
+  message asks for one.
 
 ## Comments
 
