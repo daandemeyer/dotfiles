@@ -32,6 +32,7 @@ post-dotfiles = "{{env.HOME}}/Projects/dotfiles/hooks/update-desktop-database"
 "~/.codex/mise-bash-env.sh" = { mode = "symlink" }
 
 "~/.config/Code/User" = { mode = "symlink-each" }
+"~/.config/environment.d" = { mode = "symlink-each" }
 "~/.config/fish" = { mode = "symlink-each" }
 "~/.config/git" = { mode = "symlink-each" }
 "~/.config/jj" = { mode = "symlink-each" }
