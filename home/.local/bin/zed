@@ -1,8 +1,8 @@
 #!/usr/bin/env -S mise tool-stub
 
-version = "2026-10-13-15.21.07"
+version = "2026-10-21-12.01.47"
 bin = "bin/zed"
 
 [platforms.linux-x64]
-url = "https://github.com/daandemeyer/zed/releases/download/2026-10-13-15.21.07/zed-linux-x86_64.tar.gz"
-checksum = "sha256:85ae10457aeb241b2ee9b4daa48f03e1633f5522dbbebc7aa3b141629e6eb949"
+url = "https://github.com/daandemeyer/zed/releases/download/2026-10-21-12.01.47/zed-linux-x86_64.tar.gz"
+checksum = "sha256:8864174ee331cee3549573bf4d60e71ae25f4f904d5b5b06510ec9272f11da2c"

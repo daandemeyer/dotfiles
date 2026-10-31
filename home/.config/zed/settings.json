@@ -99,6 +99,7 @@
         "CLAUDE_CODE_EXECUTABLE": "/home/daandemeyer/.local/bin/claude"
       },
       "default_config_options": {
+        "fast": false,
         "model": "opus",
         "effort": "high",
         "mode": "auto"
