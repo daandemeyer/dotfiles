@@ -131,6 +131,7 @@
   },
   "project_panel": {
     "dock": "left",
+    "starts_open": false,
     "sticky_scroll": false,
     "sort_mode": "mixed"
   },
